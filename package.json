@@ -1,0 +1,65 @@
+{
+  "name": "video-nemesis-toolkit",
+  "version": "1.0.0",
+  "description": "A toolkit for video processing and manipulation",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build",
+    "create-tables": "node scripts/create-tables.js",
+    "seed": "node scripts/seed-test-db.js",
+    "worker": "node scripts/run-worker.js",
+    "scraper": "node scripts/run-scraper.js",
+    "test:ipc": "node scripts/test-ipc.js",
+    "test:download-queue-push": "node scripts/test-download-queue-push.js",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "example:electron": "npm run build && npm run rebuild && npx electron examples/electron-app/main.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Photons3/video-nemesis-toolkit.git"
+  },
+  "keywords": [
+    "electron",
+    "download",
+    "yt-dlp",
+    "sqlite",
+    "worker"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Photons3/video-nemesis-toolkit/issues"
+  },
+  "homepage": "https://github.com/Photons3/video-nemesis-toolkit#readme",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2"
+  },
+  "peerDependencies": {
+    "electron": ">=40.6.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.3.2",
+    "electron": "^40.6.1",
+    "typescript": "^5.9.3"
+  }
+}
