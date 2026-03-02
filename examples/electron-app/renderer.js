@@ -153,6 +153,38 @@ function showQueue(tasks, source) {
   });
 }
 
+function formatBytes(n) {
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(0) + " KB";
+  return n + " B";
+}
+
+let lastCpu = null;
+function startProcessLoadPolling() {
+  setInterval(async () => {
+    try {
+      const load = await invoke(channels.PROCESS_LOAD);
+      if (!load) return;
+      const rss = load.memory?.rss;
+      const heap = load.memory?.heapUsed;
+      if (rss != null) document.getElementById("loadRss").textContent = formatBytes(rss);
+      if (heap != null) document.getElementById("loadHeap").textContent = formatBytes(heap);
+      const user = load.cpu?.user ?? 0;
+      const system = load.cpu?.system ?? 0;
+      if (lastCpu != null) {
+        const deltaUser = user - lastCpu.user;
+        const deltaSystem = system - lastCpu.system;
+        const cpuPercent = ((deltaUser + deltaSystem) / 1e4).toFixed(1);
+        document.getElementById("loadCpu").textContent = cpuPercent + "%";
+      }
+      lastCpu = { user, system };
+    } catch (_) {
+      document.getElementById("loadCpu").textContent = "—";
+    }
+  }, 1000);
+}
+startProcessLoadPolling();
+
 onScraperStatus((event) => {
   setScraperStatus(event.phase, event.nextRunAt);
   if (event.phase === "finished") {

@@ -51,6 +51,9 @@ export const IpcChannels = {
   DOWNLOAD_QUEUE_PUSHED: "toolkit:downloadQueue:pushed",
   /** Main → renderer: scraper status (payload: { phase: 'sleeping'|'running'|'finished'|'idle', nextRunAt?: string }). */
   SCRAPER_STATUS: "toolkit:scraper:status",
+
+  /** Renderer → main: get process load (memory + CPU). Returns { memory: { rss, heapUsed, heapTotal, external }, cpu: { user, system } }. */
+  PROCESS_LOAD: "toolkit:process:load",
 } as const;
 
 export type IpcChannelName = (typeof IpcChannels)[keyof typeof IpcChannels];

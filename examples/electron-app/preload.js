@@ -23,5 +23,6 @@ contextBridge.exposeInMainWorld("toolkit", {
     SCRAPER_RUN_ONCE: "toolkit:scraper:runOnce",
     DOWNLOAD_TASKS_LIST: "toolkit:downloadTasks:list",
     DOWNLOAD_TASK_MARK_FINISHED: "toolkit:downloadTasks:markFinished",
+    PROCESS_LOAD: "toolkit:process:load",
   },
 });

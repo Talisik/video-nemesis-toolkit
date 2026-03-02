@@ -82,6 +82,10 @@
       <span id="statusPhaseText">Idle</span>
     </p>
     <p id="statusNextRun"></p>
+    <p id="processLoad" style="margin-top:0.5rem; font-size:0.85rem; color:#6c757d;">
+      Main process: <span id="loadRss">—</span> RSS · <span id="loadHeap">—</span> heap · CPU (1s): <span id="loadCpu">—</span>
+    </p>
+    <p style="margin:0; font-size:0.75rem; color:#adb5bd;">RSS = main process (Electron + Node baseline is usually 80–100+ MB). Heap = JS/toolkit footprint.</p>
   </section>
 
   <section>

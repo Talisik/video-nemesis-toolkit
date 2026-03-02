@@ -232,6 +232,15 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     [IpcChannels.DOWNLOAD_WORKER_GET_STATUS]: async () => {
       return { running: getDownloadWorkerRunning() };
     },
+
+    [IpcChannels.PROCESS_LOAD]: async () => {
+      const memory = process.memoryUsage();
+      const cpu = process.cpuUsage();
+      return {
+        memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external },
+        cpu: { user: cpu.user, system: cpu.system },
+      };
+    },
   };
 }
 
