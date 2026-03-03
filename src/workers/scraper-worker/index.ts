@@ -2,6 +2,9 @@ import { openDb } from "../../db.js";
 import type Database from "better-sqlite3";
 import type { ChannelRow } from "../../types/index.js";
 import * as scraperDb from "./db.js";
+import * as channelAnalysisVideosData from "../../data/channelAnalysisVideos.js";
+import * as channelIntervalsData from "../../data/channelIntervals.js";
+import { computeIntervalMinutesFromTimestamps } from "./scheduleInference.js";
 import { listChannelVideos } from "./scrape.js";
 
 const DEFAULT_YT_DLP = "yt-dlp";
@@ -202,13 +205,18 @@ export class YouTubeChannelScraper {
       this.scheduleWindowMinutes
     );
     const pastDueIds = scraperDb.getPastDueChannelIds(db, now);
-    const allIds = [...new Set([...dueNowIds, ...pastDueIds])];
+    const intervalDueIds = scraperDb.getIntervalDueChannelIds(db, now);
+    const allIds = [...new Set([...dueNowIds, ...pastDueIds, ...intervalDueIds])];
     if (process.env.DEBUG_SCRAPER) {
-      console.log("[scraper] schedule check: day=", day, "timeMinutes=", currentTimeMinutes, "window=", this.scheduleWindowMinutes, "dueNowIds=", dueNowIds, "pastDueIds=", pastDueIds, "allIds=", allIds);
+      console.log("[scraper] schedule check: day=", day, "timeMinutes=", currentTimeMinutes, "dueNowIds=", dueNowIds, "pastDueIds=", pastDueIds, "intervalDueIds=", intervalDueIds, "allIds=", allIds);
     }
     if (allIds.length === 0) return Promise.resolve([]);
     const channels = scraperDb.getChannelsByIds(db, allIds, true);
-    const filtered = channels.filter((c) => !this.wasScrapedRecently(c));
+    const slotDueIds = new Set([...dueNowIds, ...pastDueIds]);
+    const filtered = channels.filter((c) => {
+      if (slotDueIds.has(c.id)) return true;
+      return !this.wasScrapedRecently(c);
+    });
     if (process.env.DEBUG_SCRAPER && filtered.length < channels.length) {
       console.log("[scraper] filtered out", channels.length - filtered.length, "channels (scraped recently)");
     }
@@ -279,6 +287,7 @@ export class YouTubeChannelScraper {
 
     let inRange = 0;
     let newTasks = 0;
+    const newlyQueuedVideos: typeof videos = [];
     for (const v of videos) {
       if (this.stopped) break;
       if (latestKnownTimestamp != null && v.releaseTimestamp != null && v.releaseTimestamp <= latestKnownTimestamp) continue;
@@ -316,7 +325,28 @@ export class YouTubeChannelScraper {
         video_url: videoUrl,
         channel_id: channel.id,
       });
-      if (added) newTasks++;
+      if (added) {
+        newTasks++;
+        newlyQueuedVideos.push(v);
+      }
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const analysisInputs = newlyQueuedVideos.map((v) => ({
+      id: v.id,
+      durationSeconds: v.durationSeconds ?? 0,
+      title: v.title ?? "",
+      releaseTimestamp:
+        v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp)
+          ? v.releaseTimestamp
+          : nowSeconds,
+    }));
+    if (analysisInputs.length > 0) {
+      channelAnalysisVideosData.upsert(db, channel.id, analysisInputs);
+      channelAnalysisVideosData.capPerChannel(db, channel.id);
+      const timestamps = channelAnalysisVideosData.getTimestampsForChannel(db, channel.id);
+      const intervalMinutes = computeIntervalMinutesFromTimestamps(timestamps);
+      if (intervalMinutes != null) channelIntervalsData.set(db, channel.id, intervalMinutes);
     }
 
     if (process.env.DEBUG_SCRAPER) {

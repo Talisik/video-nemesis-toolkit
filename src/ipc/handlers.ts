@@ -1,8 +1,12 @@
 import type Database from "better-sqlite3";
 import { IpcChannels } from "../types/enum/ipcChannels_enum.js";
 import * as channelsData from "../data/channels.js";
+import { inferScheduleFromChannelUrl } from "../workers/scraper-worker/scheduleInference.js";
 import * as schedulesData from "../data/schedules.js";
 import * as channelSlotsData from "../data/channelSlots.js";
+import * as channelIntervalsData from "../data/channelIntervals.js";
+import * as channelAnalysisVideosData from "../data/channelAnalysisVideos.js";
+import { computeIntervalMinutesFromTimestamps } from "../workers/scraper-worker/scheduleInference.js";
 import * as videoDetailsData from "../data/videoDetails.js";
 import * as downloadHistoryData from "../data/downloadHistory.js";
 import * as downloadTasksData from "../data/downloadTasks.js";
@@ -160,8 +164,68 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       return channelSlotsData.addSlot(db, channelId, dayOfWeek, timeMinutes);
     },
     [IpcChannels.CHANNEL_SLOTS_GET_NEXT_RUN]: async () => {
-      const nextRunAt = channelSlotsData.getNextRunAtIso(db, new Date());
+      const now = new Date();
+      const slotNext = channelSlotsData.getNextRunAt(now, db);
+      const intervalMs = channelIntervalsData.getNextIntervalDueMs(db, now);
+      let nextRunAt: string | null = null;
+      if (slotNext != null) nextRunAt = slotNext.toISOString();
+      if (intervalMs != null) {
+        const intervalAt = new Date(Date.now() + intervalMs).toISOString();
+        if (nextRunAt == null || intervalMs <= 0 || intervalAt < nextRunAt) nextRunAt = intervalAt;
+      }
       return { nextRunAt };
+    },
+    [IpcChannels.CHANNEL_ANALYZE_SCHEDULE]: async (_event, ...args) => {
+      const channelUrl = (args[0] as string)?.trim();
+      if (!channelUrl) {
+        return {
+          regular: false,
+          suggestedSlots: [],
+          message: "No channel URL provided.",
+          videoCount: 0,
+          totalFetched: 0,
+          error: "Missing channel URL",
+        };
+      }
+      const opts = (args[1] as { maxVideos?: number } | undefined) ?? {};
+      const ytDlpPath = ctx.options?.ytDlpPath ?? "yt-dlp";
+      const inferOpts: { ytDlpPath?: string; maxVideos?: number; timeoutMs?: number } = { ytDlpPath };
+      if (opts.maxVideos != null) inferOpts.maxVideos = opts.maxVideos;
+      return inferScheduleFromChannelUrl(channelUrl, inferOpts);
+    },
+    [IpcChannels.CHANNEL_ANALYSIS_VIDEOS_SAVE]: async (_event, ...args) => {
+      const channelId = args[0] as number;
+      const videos = args[1] as { id: string; durationSeconds?: number; title?: string; releaseTimestamp: number }[];
+      if (!Array.isArray(videos)) return undefined;
+      channelAnalysisVideosData.upsert(db, channelId, videos.map((v) => ({
+        id: v.id,
+        durationSeconds: v.durationSeconds ?? 0,
+        title: v.title ?? "",
+        releaseTimestamp: v.releaseTimestamp,
+      })));
+      return undefined;
+    },
+    [IpcChannels.CHANNEL_ANALYSIS_RECOMPUTE_INTERVAL]: async (_event, ...args) => {
+      const channelId = args[0] as number;
+      channelAnalysisVideosData.capPerChannel(db, channelId);
+      const timestamps = channelAnalysisVideosData.getTimestampsForChannel(db, channelId);
+      const intervalMinutes = computeIntervalMinutesFromTimestamps(timestamps);
+      if (intervalMinutes != null) channelIntervalsData.set(db, channelId, intervalMinutes);
+      return intervalMinutes;
+    },
+    [IpcChannels.CHANNEL_INTERVAL_GET]: async (_event, ...args) => {
+      const channelId = args[0] as number;
+      return channelIntervalsData.getByChannelId(db, channelId);
+    },
+    [IpcChannels.CHANNEL_INTERVAL_SET]: async (_event, ...args) => {
+      const channelId = args[0] as number;
+      const intervalMinutes = args[1] as number;
+      return channelIntervalsData.set(db, channelId, intervalMinutes);
+    },
+    [IpcChannels.CHANNEL_INTERVAL_REMOVE]: async (_event, ...args) => {
+      const channelId = args[0] as number;
+      channelIntervalsData.remove(db, channelId);
+      return undefined;
     },
 
     [IpcChannels.DOWNLOAD_TASKS_LIST]: async (_event, ...args) => {

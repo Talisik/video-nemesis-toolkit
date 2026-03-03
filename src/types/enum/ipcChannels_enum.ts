@@ -24,6 +24,19 @@ export const IpcChannels = {
   CHANNEL_SLOTS_ADD: "toolkit:channelSlots:add",
   CHANNEL_SLOTS_GET_NEXT_RUN: "toolkit:channelSlots:getNextRun",
 
+  /** Infer upload schedule from channel URL (last 50 videos). Returns suggested slots or irregular. */
+  CHANNEL_ANALYZE_SCHEDULE: "toolkit:channelAnalyze:schedule",
+
+  // Channel intervals (when not scheduled: scrape every N minutes)
+  CHANNEL_INTERVAL_GET: "toolkit:channelInterval:get",
+  CHANNEL_INTERVAL_SET: "toolkit:channelInterval:set",
+  CHANNEL_INTERVAL_REMOVE: "toolkit:channelInterval:remove",
+
+  /** Save videos used for interval inference (e.g. after analyze). Payload: channelId, videos[]. */
+  CHANNEL_ANALYSIS_VIDEOS_SAVE: "toolkit:channelAnalysisVideos:save",
+  /** Recompute interval from channel_analysis_videos and update channel_intervals. */
+  CHANNEL_ANALYSIS_RECOMPUTE_INTERVAL: "toolkit:channelAnalysis:recomputeInterval",
+
   // Download tasks
   DOWNLOAD_TASKS_LIST: "toolkit:downloadTasks:list",
   DOWNLOAD_TASKS_ADD: "toolkit:downloadTasks:add",

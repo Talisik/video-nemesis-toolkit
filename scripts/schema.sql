@@ -76,3 +76,10 @@ CREATE TABLE channel_slots (
   time_minutes INTEGER NOT NULL,
   FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
 );
+
+-- Interval-based run when channel has no fixed schedule (e.g. scrape every 3 days). Uses channels.last_scraped_at for due check.
+CREATE TABLE IF NOT EXISTS channel_intervals (
+  channel_id INTEGER PRIMARY KEY,
+  interval_minutes INTEGER NOT NULL,
+  FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+);
