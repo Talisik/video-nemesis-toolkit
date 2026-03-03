@@ -46,6 +46,13 @@ function timeToMinutes(timeStr) {
   return (h || 0) * 60 + (m || 0);
 }
 
+function formatIntervalMinutes(mins) {
+  if (mins < 60) return mins + " min";
+  if (mins < 24 * 60) return (mins / 60) + " hours";
+  if (mins === 7 * 24 * 60) return "1 week";
+  return (mins / (24 * 60)) + " days";
+}
+
 function slotToDisplay(slot) {
   const h = Math.floor(slot.time_minutes / 60);
   const m = slot.time_minutes % 60;
@@ -81,19 +88,24 @@ async function loadChannels() {
   listEl.innerHTML = "";
   for (const ch of list || []) {
     const slots = await invoke(channels.CHANNEL_SLOTS_LIST, ch.id);
+    const interval = await invoke(channels.CHANNEL_INTERVAL_GET, ch.id);
+    const slotDisplays = (slots || []).map((s) => slotToDisplay(s)).join(", ") || "(no run times)";
+    const intervalDisplay = interval?.interval_minutes
+      ? "Check every " + formatIntervalMinutes(interval.interval_minutes)
+      : "";
     const card = document.createElement("div");
     card.className = "channel-card";
-    const slotDisplays = (slots || []).map((s) => slotToDisplay(s)).join(", ") || "(no run times)";
     card.innerHTML = `
       <h3>${escapeHtml(ch.name || ch.url)}</h3>
       <div class="run-at-list">${escapeHtml(ch.url)}</div>
-      <div class="run-at-list">Run at: ${escapeHtml(slotDisplays)}</div>
+      <div class="run-at-list">Run at: ${escapeHtml(slotDisplays)}${intervalDisplay ? " · " + escapeHtml(intervalDisplay) : ""}</div>
       <div style="margin-top:0.35rem;">
         <select class="add-slot-day inline" data-channel-id="${ch.id}">
           ${[0,1,2,3,4,5,6].map((d) => `<option value="${d}">${DAY_NAMES[d]}</option>`).join("")}
         </select>
         <input type="time" class="add-slot-time inline" value="14:00" data-channel-id="${ch.id}" />
         <button type="button" class="add-slot-btn" data-channel-id="${ch.id}">Add run time</button>
+        ${interval ? "<button type=\"button\" class=\"remove-interval-btn\" data-channel-id=\"" + ch.id + "\">Remove interval</button>" : "<select class=\"set-interval-days inline\" data-channel-id=\"" + ch.id + "\"><option value=\"\">Set interval…</option><option value=\"4320\">Every 3 days</option><option value=\"10080\">Every 7 days</option><option value=\"20160\">Every 14 days</option></select><button type=\"button\" class=\"set-interval-btn\" data-channel-id=\"" + ch.id + "\">Set</button>"}
       </div>
     `;
     listEl.appendChild(card);
@@ -111,6 +123,36 @@ async function loadChannels() {
         await invoke(channels.SCRAPER_START);
       } catch (_err) {
         setScraperStatus("idle");
+      }
+    };
+  });
+  listEl.querySelectorAll(".remove-interval-btn").forEach((btn) => {
+    btn.onclick = async () => {
+      await invoke(channels.CHANNEL_INTERVAL_REMOVE, Number(btn.dataset.channelId));
+      await loadChannels();
+      await invoke(channels.SCRAPER_STOP);
+      try {
+        await invoke(channels.SCRAPER_START);
+      } catch (_err) {
+        setScraperStatus("idle");
+      }
+    };
+  });
+  listEl.querySelectorAll(".set-interval-btn").forEach((btn) => {
+    btn.onclick = async () => {
+      const card = btn.closest(".channel-card");
+      const channelId = Number(btn.dataset.channelId);
+      const sel = card.querySelector(".set-interval-days");
+      const val = sel?.value;
+      if (val) {
+        await invoke(channels.CHANNEL_INTERVAL_SET, channelId, Number(val));
+        await loadChannels();
+        await invoke(channels.SCRAPER_STOP);
+        try {
+          await invoke(channels.SCRAPER_START);
+        } catch (_err) {
+          setScraperStatus("idle");
+        }
       }
     };
   });
@@ -212,6 +254,130 @@ document.getElementById("newScheduleBtn").onclick = async () => {
   document.getElementById("scheduleSelect").value = selectedScheduleId;
   loadChannels();
 };
+
+function showScheduleMode(mode) {
+  const isAuto = mode === "auto";
+  document.getElementById("addChannelAuto").style.display = isAuto ? "block" : "none";
+  document.getElementById("addChannelManual").style.display = isAuto ? "none" : "block";
+}
+document.querySelectorAll('input[name="scheduleMode"]').forEach((radio) => {
+  radio.onchange = () => showScheduleMode(radio.value);
+});
+showScheduleMode(document.querySelector('input[name="scheduleMode"]:checked')?.value || "manual");
+
+document.getElementById("analyzeScheduleBtn").onclick = async () => {
+  const url = document.getElementById("channelUrlAuto").value.trim();
+  if (!url) return;
+  const resultEl = document.getElementById("analyzeResult");
+  const actionsEl = document.getElementById("addChannelAutoActions");
+  resultEl.style.display = "block";
+  resultEl.className = "analyze-result";
+  resultEl.textContent = "Analyzing last 20 videos…";
+  actionsEl.style.display = "none";
+  let res;
+  try {
+    res = await invoke(channels.CHANNEL_ANALYZE_SCHEDULE, url, { maxVideos: 20 });
+  } catch (e) {
+    resultEl.className = "analyze-result error";
+    resultEl.textContent = "Error: " + (e?.message || String(e));
+    return;
+  }
+  if (res?.error) {
+    resultEl.className = "analyze-result error";
+    resultEl.textContent = res.message || res.error;
+    return;
+  }
+  let html = res.message + (res.videoCount ? ` (${res.videoCount} videos with dates)` : "");
+  if (res.basis) {
+    html += '<div class="analyze-basis">' + escapeHtml(res.basis) + '</div>';
+  }
+  if (res.intervalBasis && res.intervalBasis !== res.basis) {
+    html += '<div class="analyze-basis">Interval: ' + escapeHtml(res.intervalBasis) + '</div>';
+  }
+  if (res.timeIsExact === false) {
+    html += '<div class="analyze-basis analyze-caveat">Upload time: we only get the upload <strong>date</strong> from the channel page (not the hour). The suggested time is midnight UTC in your timezone — choose a run time that works for you.</div>';
+  }
+  resultEl.className = "analyze-result";
+  resultEl.innerHTML = html;
+  actionsEl.style.display = "block";
+  actionsEl.innerHTML = "";
+  const slots = res.suggestedSlots || [];
+  const suggestedInterval = res.suggestedIntervalMinutes;
+  const name = document.getElementById("channelNameAuto").value.trim() || "Channel";
+  if (slots.length > 0 && suggestedInterval != null) {
+    const intervalLabel = suggestedInterval < 60 ? suggestedInterval + " min" : suggestedInterval === 60 ? "1 hour" : suggestedInterval < 1440 ? (suggestedInterval / 60) + " hours" : suggestedInterval === 7 * 24 * 60 ? "1 week" : (suggestedInterval / 1440) + " days";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Add channel (check every " + intervalLabel + ")";
+    btn.onclick = () => addChannelWithInterval(url, name, suggestedInterval, res.analysisVideos);
+    actionsEl.appendChild(btn);
+    actionsEl.appendChild(document.createTextNode(" "));
+  }
+  const btnNone = document.createElement("button");
+  btnNone.type = "button";
+  btnNone.textContent = "Add channel with no run times (set later)";
+  btnNone.onclick = () => addChannelWithSlots(url, name, []);
+  actionsEl.appendChild(btnNone);
+  if (slots.length === 0) {
+    actionsEl.appendChild(document.createTextNode(" "));
+    const btnInterval = document.createElement("button");
+    btnInterval.type = "button";
+    btnInterval.textContent = "Add channel, check every 3 days";
+    btnInterval.onclick = () => addChannelWithInterval(url, name, 3 * 24 * 60, null);
+    actionsEl.appendChild(btnInterval);
+  }
+};
+
+async function addChannelWithInterval(url, name, intervalMinutes, analysisVideos) {
+  if (selectedScheduleId == null) return;
+  const channel = await invoke(channels.CHANNELS_CREATE, {
+    schedule_id: selectedScheduleId,
+    url,
+    name,
+    active: 1,
+  });
+  const channelId = channel?.id;
+  if (channelId != null) {
+    if (Array.isArray(analysisVideos) && analysisVideos.length > 0) {
+      await invoke(channels.CHANNEL_ANALYSIS_VIDEOS_SAVE, channelId, analysisVideos);
+    }
+    await invoke(channels.CHANNEL_INTERVAL_SET, channelId, intervalMinutes);
+  }
+  document.getElementById("channelUrlAuto").value = "";
+  document.getElementById("channelNameAuto").value = "";
+  document.getElementById("analyzeResult").style.display = "none";
+  document.getElementById("addChannelAutoActions").style.display = "none";
+  await loadChannels();
+  await invoke(channels.SCRAPER_STOP);
+  try {
+    await invoke(channels.SCRAPER_START);
+  } catch (_err) {
+    setScraperStatus("idle");
+  }
+}
+
+async function addChannelWithSlots(url, name, slots) {
+  if (selectedScheduleId == null) return;
+  const channel = await invoke(channels.CHANNELS_CREATE, {
+    schedule_id: selectedScheduleId,
+    url,
+    name,
+    active: 1,
+  });
+  const channelId = channel?.id;
+  if (channelId != null) await invoke(channels.CHANNEL_SLOTS_REPLACE, channelId, slots.map((s) => ({ day_of_week: s.day_of_week, time_minutes: s.time_minutes })));
+  document.getElementById("channelUrlAuto").value = "";
+  document.getElementById("channelNameAuto").value = "";
+  document.getElementById("analyzeResult").style.display = "none";
+  document.getElementById("addChannelAutoActions").style.display = "none";
+  await loadChannels();
+  await invoke(channels.SCRAPER_STOP);
+  try {
+    await invoke(channels.SCRAPER_START);
+  } catch (_err) {
+    setScraperStatus("idle");
+  }
+}
 
 document.getElementById("addChannelBtn").onclick = async () => {
   if (selectedScheduleId == null) return;

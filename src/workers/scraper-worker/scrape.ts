@@ -1,6 +1,10 @@
 import { spawn } from "node:child_process";
 
-/** yt-dlp --print uses %(field)s template placeholders. release_timestamp = unix seconds (for upload time window). */
+/**
+ * yt-dlp --print template. We use %(timestamp)s (Unix seconds).
+ * With fullMetadata: false (default): --flat-playlist + approximate_date → date only (midnight UTC).
+ * With fullMetadata: true: no flat-playlist → fetch each video's metadata → real upload date/time.
+ */
 const PRINT_FORMAT = "%(id)s\t%(duration)s\t%(title)s\t%(timestamp)s";
 
 /** YouTube video IDs are 11 chars, alphanumeric + hyphen + underscore. */
@@ -14,35 +18,33 @@ export interface ScrapedVideo {
   id: string;
   durationSeconds: number;
   title: string;
-  /** Unix seconds (from release_timestamp), for upload time-of-day filtering. */
+  /** Unix seconds (from yt-dlp %(timestamp)s). Real upload time when fullMetadata: true; else date-only (midnight UTC). */
   releaseTimestamp: number | null;
 }
 
-const DEFAULT_YT_DLP_TIMEOUT_MS = 120_000; // 2 minutes
+const DEFAULT_YT_DLP_TIMEOUT_MS = 120_000; // 2 min for flat-playlist
+const FULL_METADATA_TIMEOUT_MS = 300_000; // 5 min when fetching each video's metadata
 
 /**
- * Run yt-dlp --flat-playlist --print to list videos from a channel URL.
- * Returns parsed lines; duration may be 0 if missing (e.g. live/scheduled).
- * Times out after timeoutMs (default 2 min) to avoid hanging on large channels or network issues.
- * When maxVideos is set, only the latest N videos are fetched (--playlist-end); /videos is newest-first.
+ * Run yt-dlp --print to list videos from a channel URL.
+ * - fullMetadata: false (default): --flat-playlist + approximate_date. Fast, but timestamp is date-only (midnight UTC). Use for regular scrape.
+ * - fullMetadata: true: no flat-playlist, fetches each video's metadata. Slower (N requests) but %(timestamp)s is real upload time. Use for schedule inference.
  */
 export function listChannelVideos(
   ytDlpPath: string,
   channelUrl: string,
-  options?: { timeoutMs?: number; maxVideos?: number }
+  options?: { timeoutMs?: number; maxVideos?: number; fullMetadata?: boolean }
 ): Promise<ScrapedVideo[]> {
-  const timeoutMs = options?.timeoutMs ?? DEFAULT_YT_DLP_TIMEOUT_MS;
+  const fullMetadata = options?.fullMetadata === true;
+  const timeoutMs = options?.timeoutMs ?? (fullMetadata ? FULL_METADATA_TIMEOUT_MS : DEFAULT_YT_DLP_TIMEOUT_MS);
   const maxVideos = options?.maxVideos;
 
-  const args = [
-    "--flat-playlist",
-    "--extractor-args",
-    "youtubetab:approximate_date",
-    "--print",
-    PRINT_FORMAT,
-    "--no-warnings",
-    "--quiet",
-  ];
+  const args = ["--no-download", "--print", PRINT_FORMAT, "--no-warnings", "--quiet"];
+  if (fullMetadata) {
+    // No --flat-playlist: fetch each video's metadata for real upload time
+  } else {
+    args.push("--flat-playlist", "--extractor-args", "youtubetab:approximate_date");
+  }
   if (maxVideos !== undefined && maxVideos > 0) {
     args.push("--playlist-end", String(maxVideos));
   }

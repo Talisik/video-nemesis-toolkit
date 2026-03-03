@@ -31,6 +31,14 @@
     .new-schedule-row input { width: 200px; }
     .add-channel-row { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; margin-top: 0.5rem; }
     .add-channel-row input { width: 180px; }
+    .schedule-mode-row { margin: 0.5rem 0; display: flex; gap: 1rem; flex-wrap: wrap; }
+    .radio-label { display: inline-flex; align-items: center; gap: 0.35rem; font-weight: normal; margin: 0; }
+    .add-channel-block { margin-top: 0.5rem; }
+    .analyze-result { margin-top: 0.5rem; padding: 0.5rem; background: #fff; border-radius: 4px; border: 1px solid #dee2e6; font-size: 0.9rem; }
+    .analyze-result.error { border-color: #dc3545; color: #721c24; }
+    .analyze-basis { margin-top: 0.5rem; font-size: 0.85rem; color: #495057; }
+    .analyze-caveat { color: #856404; background: #fff3cd; padding: 0.35rem; border-radius: 4px; }
+    .add-channel-actions { margin-top: 0.5rem; }
   </style>
 </head>
 <body>
@@ -59,16 +67,31 @@
     <div id="channelsList"></div>
     <div id="addChannelSection" style="display:none; margin-top: 0.75rem;">
       <label>Add channel to this schedule</label>
-      <div class="add-channel-row">
-        <input id="channelUrl" type="text" placeholder="https://www.youtube.com/@mkbhd" />
-        <input id="channelName" type="text" placeholder="Name (optional)" />
-        <span>First run at:</span>
-        <select id="addChannelDay" class="inline">
-          <option value="0">Sun</option><option value="1">Mon</option><option value="2">Tue</option>
-          <option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option>
-        </select>
-        <input id="addChannelTime" type="time" value="14:00" class="inline" />
-        <button type="button" id="addChannelBtn">Add channel</button>
+      <div class="schedule-mode-row">
+        <label class="radio-label"><input type="radio" name="scheduleMode" value="auto" /> Auto-detect run times from channel</label>
+        <label class="radio-label"><input type="radio" name="scheduleMode" value="manual" checked /> Set run time manually</label>
+      </div>
+      <div id="addChannelAuto" class="add-channel-block">
+        <div class="add-channel-row">
+          <input id="channelUrlAuto" type="text" placeholder="https://www.youtube.com/@channel" />
+          <input id="channelNameAuto" type="text" placeholder="Name (optional)" />
+          <button type="button" id="analyzeScheduleBtn">Analyze channel</button>
+        </div>
+        <div id="analyzeResult" class="analyze-result" style="display:none;"></div>
+        <div id="addChannelAutoActions" class="add-channel-actions" style="display:none;"></div>
+      </div>
+      <div id="addChannelManual" class="add-channel-block">
+        <div class="add-channel-row">
+          <input id="channelUrl" type="text" placeholder="https://www.youtube.com/@mkbhd" />
+          <input id="channelName" type="text" placeholder="Name (optional)" />
+          <span>First run at:</span>
+          <select id="addChannelDay" class="inline">
+            <option value="0">Sun</option><option value="1">Mon</option><option value="2">Tue</option>
+            <option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option>
+          </select>
+          <input id="addChannelTime" type="time" value="14:00" class="inline" />
+          <button type="button" id="addChannelBtn">Add channel</button>
+        </div>
       </div>
     </div>
   </section>

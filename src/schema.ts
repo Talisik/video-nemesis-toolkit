@@ -69,6 +69,22 @@ export function runMigrations(db: Database.Database): void {
     time_minutes INTEGER NOT NULL,
     FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS channel_intervals (
+    channel_id INTEGER PRIMARY KEY,
+    interval_minutes INTEGER NOT NULL,
+    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS channel_analysis_videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id INTEGER NOT NULL,
+    video_id TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    release_timestamp INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(channel_id, video_id),
+    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+  )`);
 }
 
 /**

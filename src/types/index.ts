@@ -75,6 +75,14 @@ export interface ChannelSlotRow {
 }
 
 /**
+ * Row from channel_intervals table. When set, channel is scraped every interval_minutes (no fixed day/time).
+ */
+export interface ChannelIntervalRow {
+  channel_id: number;
+  interval_minutes: number;
+}
+
+/**
  * Row from video_details table. video_duration is stored in seconds (integer).
  * release_timestamp is Unix seconds (from yt-dlp release_timestamp).
  */

@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import * as channelsData from "../../data/channels.js";
 import * as channelSlotsData from "../../data/channelSlots.js";
+import * as channelIntervalsData from "../../data/channelIntervals.js";
 import * as downloadHistoryData from "../../data/downloadHistory.js";
 import * as videoDetailsData from "../../data/videoDetails.js";
 import * as downloadTasksData from "../../data/downloadTasks.js";
@@ -60,20 +61,32 @@ export function getPastDueChannelIds(
   return channelSlotsData.getPastDueChannelIds(db, asOf);
 }
 
-/** Whether there are any channel_slots (schedule-driven mode). */
+/** Whether there are any channel_slots or channel_intervals (schedule- or interval-driven mode). */
 export function hasAnySchedules(db: Database.Database): boolean {
-  return channelSlotsData.hasAnyChannelSlots(db);
+  return channelSlotsData.hasAnyChannelSlots(db) || channelIntervalsData.hasAnyChannelIntervals(db);
 }
 
 /**
- * Milliseconds from fromDate until the next slot start (any channel_slot).
- * Returns null if no channel_slots. Used for schedule-based sleep.
+ * Channel IDs that have an interval and are due (last_scraped_at + interval elapsed, or never scraped).
+ */
+export function getIntervalDueChannelIds(db: Database.Database, asOf: Date): number[] {
+  return channelIntervalsData.getDueChannelIds(db, asOf);
+}
+
+/**
+ * Milliseconds from fromDate until the next slot start (any channel_slot) or next interval due (any channel_interval).
+ * Returns null if no slots and no intervals. Used for schedule-based sleep.
  */
 export function getNextSlotStartMs(
   db: Database.Database,
   fromDate: Date
 ): number | null {
-  return channelSlotsData.getNextSlotStartMs(db, fromDate);
+  const slotMs = channelSlotsData.getNextSlotStartMs(db, fromDate);
+  const intervalMs = channelIntervalsData.getNextIntervalDueMs(db, fromDate);
+  if (slotMs == null && intervalMs == null) return null;
+  if (slotMs == null) return intervalMs;
+  if (intervalMs == null) return slotMs;
+  return Math.min(slotMs, intervalMs);
 }
 
 /** Slots for a channel (day_of_week + time_minutes; no upload-window filter). */
