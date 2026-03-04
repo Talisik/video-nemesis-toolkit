@@ -1,6 +1,12 @@
 import Database from "better-sqlite3";
 import type { ChannelIntervalRow } from "../types/index.js";
 
+/**
+ * @deprecated Channel intervals are deprecated in favor of intelligent_schedule.
+ * The intelligent scheduler automatically predicts optimal scrape times based on upload history.
+ * This module is kept for backward compatibility only and should not be used in new code.
+ */
+
 const TABLE = "channel_intervals";
 
 /**

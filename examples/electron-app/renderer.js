@@ -33,9 +33,10 @@ async function refreshNextRunDisplay(nextEl) {
   const el = nextEl ?? document.getElementById("statusNextRun");
   if (!el) return;
   try {
-    const res = await invoke(channels.CHANNEL_SLOTS_GET_NEXT_RUN);
-    const iso = res?.nextRunAt;
+    const iso = await invoke(channels.CHANNEL_SLOTS_GET_NEXT_RUN);
     el.textContent = iso ? "Next run: " + new Date(iso).toLocaleString() : "No run times scheduled. Add a run time to schedule the next scrape.";
+    el.style.fontStyle = "normal";
+    el.style.color = "inherit";
   } catch {
     el.textContent = "";
   }
@@ -88,24 +89,19 @@ async function loadChannels() {
   listEl.innerHTML = "";
   for (const ch of list || []) {
     const slots = await invoke(channels.CHANNEL_SLOTS_LIST, ch.id);
-    const interval = await invoke(channels.CHANNEL_INTERVAL_GET, ch.id);
     const slotDisplays = (slots || []).map((s) => slotToDisplay(s)).join(", ") || "(no run times)";
-    const intervalDisplay = interval?.interval_minutes
-      ? "Check every " + formatIntervalMinutes(interval.interval_minutes)
-      : "";
     const card = document.createElement("div");
     card.className = "channel-card";
     card.innerHTML = `
       <h3>${escapeHtml(ch.name || ch.url)}</h3>
       <div class="run-at-list">${escapeHtml(ch.url)}</div>
-      <div class="run-at-list">Run at: ${escapeHtml(slotDisplays)}${intervalDisplay ? " · " + escapeHtml(intervalDisplay) : ""}</div>
+      <div class="run-at-list">Manual run times: ${escapeHtml(slotDisplays)}</div>
       <div style="margin-top:0.35rem;">
         <select class="add-slot-day inline" data-channel-id="${ch.id}">
           ${[0,1,2,3,4,5,6].map((d) => `<option value="${d}">${DAY_NAMES[d]}</option>`).join("")}
         </select>
         <input type="time" class="add-slot-time inline" value="14:00" data-channel-id="${ch.id}" />
         <button type="button" class="add-slot-btn" data-channel-id="${ch.id}">Add run time</button>
-        ${interval ? "<button type=\"button\" class=\"remove-interval-btn\" data-channel-id=\"" + ch.id + "\">Remove interval</button>" : "<select class=\"set-interval-days inline\" data-channel-id=\"" + ch.id + "\"><option value=\"\">Set interval…</option><option value=\"4320\">Every 3 days</option><option value=\"10080\">Every 7 days</option><option value=\"20160\">Every 14 days</option></select><button type=\"button\" class=\"set-interval-btn\" data-channel-id=\"" + ch.id + "\">Set</button>"}
       </div>
     `;
     listEl.appendChild(card);
@@ -123,36 +119,6 @@ async function loadChannels() {
         await invoke(channels.SCRAPER_START);
       } catch (_err) {
         setScraperStatus("idle");
-      }
-    };
-  });
-  listEl.querySelectorAll(".remove-interval-btn").forEach((btn) => {
-    btn.onclick = async () => {
-      await invoke(channels.CHANNEL_INTERVAL_REMOVE, Number(btn.dataset.channelId));
-      await loadChannels();
-      await invoke(channels.SCRAPER_STOP);
-      try {
-        await invoke(channels.SCRAPER_START);
-      } catch (_err) {
-        setScraperStatus("idle");
-      }
-    };
-  });
-  listEl.querySelectorAll(".set-interval-btn").forEach((btn) => {
-    btn.onclick = async () => {
-      const card = btn.closest(".channel-card");
-      const channelId = Number(btn.dataset.channelId);
-      const sel = card.querySelector(".set-interval-days");
-      const val = sel?.value;
-      if (val) {
-        await invoke(channels.CHANNEL_INTERVAL_SET, channelId, Number(val));
-        await loadChannels();
-        await invoke(channels.SCRAPER_STOP);
-        try {
-          await invoke(channels.SCRAPER_START);
-        } catch (_err) {
-          setScraperStatus("idle");
-        }
       }
     };
   });
@@ -272,11 +238,11 @@ document.getElementById("analyzeScheduleBtn").onclick = async () => {
   const actionsEl = document.getElementById("addChannelAutoActions");
   resultEl.style.display = "block";
   resultEl.className = "analyze-result";
-  resultEl.textContent = "Analyzing last 20 videos…";
+  resultEl.textContent = "Analyzing channel…";
   actionsEl.style.display = "none";
   let res;
   try {
-    res = await invoke(channels.CHANNEL_ANALYZE_SCHEDULE, url, { maxVideos: 20 });
+    res = await invoke(channels.CHANNEL_ANALYZE_SCHEDULE, url, { maxVideos: 50 });
   } catch (e) {
     resultEl.className = "analyze-result error";
     resultEl.textContent = "Error: " + (e?.message || String(e));
@@ -287,49 +253,71 @@ document.getElementById("analyzeScheduleBtn").onclick = async () => {
     resultEl.textContent = res.message || res.error;
     return;
   }
-  let html = res.message + (res.videoCount ? ` (${res.videoCount} videos with dates)` : "");
-  if (res.basis) {
-    html += '<div class="analyze-basis">' + escapeHtml(res.basis) + '</div>';
+  
+  const name = document.getElementById("channelNameAuto").value.trim() || "Channel";
+  let html = '<strong>Analysis:</strong> ' + escapeHtml(res.message) + (res.videoCount ? ` (${res.videoCount} videos found)` : "");
+  
+  // Show intelligent prediction
+  if (res.intelligentPrediction) {
+    const pred = res.intelligentPrediction;
+    const nextTime = new Date(pred.nextScrapeTime).toLocaleString();
+    html += '<div class="analyze-basis">';
+    html += '<strong>Intelligent Prediction:</strong><br>';
+    html += 'Next scrape: ' + escapeHtml(nextTime) + '<br>';
+    html += 'Pattern: ' + escapeHtml(pred.pattern) + ' · ';
+    html += 'Confidence: ' + (pred.confidence * 100).toFixed(0) + '% · ';
+    html += 'Expected: ~' + Math.round(pred.expectedVideos) + ' videos<br>';
+    if (pred.isErratic) {
+      html += '<em class="analyze-caveat">Pattern is erratic (upload schedule varies widely)</em>';
+    }
+    html += '</div>';
   }
-  if (res.intervalBasis && res.intervalBasis !== res.basis) {
-    html += '<div class="analyze-basis">Interval: ' + escapeHtml(res.intervalBasis) + '</div>';
+  
+  // Show manual suggestions
+  const slots = res.suggestedSlots || [];
+  if (slots.length > 0) {
+    html += '<div class="analyze-basis"><strong>Manual Mode Options:</strong><br>';
+    const slotDisplays = slots.map(s => DAY_NAMES[s.day_of_week] + " " + Math.floor(s.time_minutes / 60) + ":" + String(s.time_minutes % 60).padStart(2, "0")).join(", ");
+    html += 'Detected upload times: ' + escapeHtml(slotDisplays) + '</div>';
   }
-  if (res.timeIsExact === false) {
-    html += '<div class="analyze-basis analyze-caveat">Upload time: we only get the upload <strong>date</strong> from the channel page (not the hour). The suggested time is midnight UTC in your timezone — choose a run time that works for you.</div>';
-  }
+  
   resultEl.className = "analyze-result";
   resultEl.innerHTML = html;
   actionsEl.style.display = "block";
   actionsEl.innerHTML = "";
-  const slots = res.suggestedSlots || [];
-  const suggestedInterval = res.suggestedIntervalMinutes;
-  const name = document.getElementById("channelNameAuto").value.trim() || "Channel";
-  if (slots.length > 0 && suggestedInterval != null) {
-    const intervalLabel = suggestedInterval < 60 ? suggestedInterval + " min" : suggestedInterval === 60 ? "1 hour" : suggestedInterval < 1440 ? (suggestedInterval / 60) + " hours" : suggestedInterval === 7 * 24 * 60 ? "1 week" : (suggestedInterval / 1440) + " days";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "Add channel (check every " + intervalLabel + ")";
-    btn.onclick = () => addChannelWithInterval(url, name, suggestedInterval, res.analysisVideos);
-    actionsEl.appendChild(btn);
+  
+  // Auto mode button (intelligent scheduler)
+  if (res.intelligentPrediction) {
+    const btnAuto = document.createElement("button");
+    btnAuto.type = "button";
+    btnAuto.textContent = "Add with intelligent scheduling";
+    btnAuto.onclick = () => addChannelWithIntelligent(url, name);
+    actionsEl.appendChild(btnAuto);
     actionsEl.appendChild(document.createTextNode(" "));
   }
+  
+  // Manual mode buttons (suggested slots)
+  if (slots.length > 0) {
+    const btnSlots = document.createElement("button");
+    btnSlots.type = "button";
+    btnSlots.textContent = "Add with suggested run times";
+    btnSlots.onclick = () => addChannelWithSlots(url, name, slots);
+    actionsEl.appendChild(btnSlots);
+    actionsEl.appendChild(document.createTextNode(" "));
+  }
+  
+  // Fallback: add without times
   const btnNone = document.createElement("button");
   btnNone.type = "button";
-  btnNone.textContent = "Add channel with no run times (set later)";
+  btnNone.textContent = "Add with no run times (set later)";
   btnNone.onclick = () => addChannelWithSlots(url, name, []);
   actionsEl.appendChild(btnNone);
-  if (slots.length === 0) {
-    actionsEl.appendChild(document.createTextNode(" "));
-    const btnInterval = document.createElement("button");
-    btnInterval.type = "button";
-    btnInterval.textContent = "Add channel, check every 3 days";
-    btnInterval.onclick = () => addChannelWithInterval(url, name, 3 * 24 * 60, null);
-    actionsEl.appendChild(btnInterval);
-  }
 };
 
-async function addChannelWithInterval(url, name, intervalMinutes, analysisVideos) {
+async function addChannelWithIntelligent(url, name) {
   if (selectedScheduleId == null) return;
+  
+  // Create channel
   const channel = await invoke(channels.CHANNELS_CREATE, {
     schedule_id: selectedScheduleId,
     url,
@@ -337,12 +325,53 @@ async function addChannelWithInterval(url, name, intervalMinutes, analysisVideos
     active: 1,
   });
   const channelId = channel?.id;
+  
   if (channelId != null) {
-    if (Array.isArray(analysisVideos) && analysisVideos.length > 0) {
-      await invoke(channels.CHANNEL_ANALYSIS_VIDEOS_SAVE, channelId, analysisVideos);
+    // Show a loading message while fetching
+    const statusEl = document.getElementById("statusNextRun");
+    if (statusEl) {
+      statusEl.textContent = "Fetching accurate timestamps for analysis... (this may take 30+ seconds)";
+      statusEl.style.fontStyle = "italic";
+      statusEl.style.color = "#666";
     }
-    await invoke(channels.CHANNEL_INTERVAL_SET, channelId, intervalMinutes);
+    
+    // Fetch accurate timestamps in background (don't wait)
+    console.log("[Frontend] Fetching accurate timestamps for channel", channelId);
+    invoke(channels.CHANNEL_FETCH_ACCURATE_TIMESTAMPS, url).then(async (result) => {
+      console.log("[Frontend] Fetch result:", result);
+      if (result?.videos && result.videos.length > 0) {
+        console.log("[Frontend] Saving", result.videos.length, "analysis videos to channel", channelId);
+        try {
+          // Save accurate timestamps (auto-updates intelligent schedule)
+          const saveResult = await invoke(channels.CHANNEL_ANALYSIS_VIDEOS_SAVE, channelId, result.videos);
+          console.log("[Frontend] Save result:", saveResult);
+          console.log("[Frontend] Intelligent schedule updated with accurate timestamps for:", name);
+          
+          // Refresh the next run display to show the newly created schedule
+          await refreshNextRunDisplay(statusEl);
+        } catch (saveErr) {
+          console.error("[Frontend] Failed to save analysis videos:", saveErr);
+          if (statusEl) {
+            statusEl.textContent = "Error saving analysis videos. Check console.";
+            statusEl.style.color = "red";
+          }
+        }
+      } else {
+        console.warn("[Frontend] No videos returned from fetch");
+        if (statusEl) {
+          statusEl.textContent = "No videos returned from fetch";
+          statusEl.style.color = "#666";
+        }
+      }
+    }).catch(err => {
+      console.error("[Frontend] Failed to fetch accurate timestamps:", err);
+      if (statusEl) {
+        statusEl.textContent = "Error fetching timestamps: " + (err?.message || err);
+        statusEl.style.color = "red";
+      }
+    });
   }
+  
   document.getElementById("channelUrlAuto").value = "";
   document.getElementById("channelNameAuto").value = "";
   document.getElementById("analyzeResult").style.display = "none";

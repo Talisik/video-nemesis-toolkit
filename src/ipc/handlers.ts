@@ -1,18 +1,20 @@
 import type Database from "better-sqlite3";
 import { IpcChannels } from "../types/enum/ipcChannels_enum.js";
 import * as channelsData from "../data/channels.js";
-import { inferScheduleFromChannelUrl } from "../workers/scraper-worker/scheduleInference.js";
+import { listChannelVideos } from "../workers/scraper-worker/scrape.js";
 import * as schedulesData from "../data/schedules.js";
 import * as channelSlotsData from "../data/channelSlots.js";
-import * as channelIntervalsData from "../data/channelIntervals.js";
+
 import * as channelAnalysisVideosData from "../data/channelAnalysisVideos.js";
-import { computeIntervalMinutesFromTimestamps } from "../workers/scraper-worker/scheduleInference.js";
+
 import * as videoDetailsData from "../data/videoDetails.js";
 import * as downloadHistoryData from "../data/downloadHistory.js";
 import * as downloadTasksData from "../data/downloadTasks.js";
+import * as intelligentSchedulesData from "../data/intelligentSchedules.js";
 import { DownloadTaskStatus } from "../types/enum/downloadTaskStatus.js";
 import type { IpcBridgeOptions } from "./types.js";
 import type { ScheduleRow } from "../types/index.js";
+import { IntelligentScheduleService } from "../workers/scraper-worker/intelligentScheduleService.js";
 
 function jsonArr(v: string[] | string): string {
   if (typeof v === "string") return v;
@@ -163,69 +165,229 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       const timeMinutes = args[2] as number;
       return channelSlotsData.addSlot(db, channelId, dayOfWeek, timeMinutes);
     },
-    [IpcChannels.CHANNEL_SLOTS_GET_NEXT_RUN]: async () => {
-      const now = new Date();
-      const slotNext = channelSlotsData.getNextRunAt(now, db);
-      const intervalMs = channelIntervalsData.getNextIntervalDueMs(db, now);
-      let nextRunAt: string | null = null;
-      if (slotNext != null) nextRunAt = slotNext.toISOString();
-      if (intervalMs != null) {
-        const intervalAt = new Date(Date.now() + intervalMs).toISOString();
-        if (nextRunAt == null || intervalMs <= 0 || intervalAt < nextRunAt) nextRunAt = intervalAt;
+    [IpcChannels.CHANNEL_SLOTS_GET_NEXT_RUN]: async (_event, ...args) => {
+      const fromDate = args[0] ? new Date(args[0] as string | number) : new Date();
+      
+      // Check both manual slots and intelligent schedule
+      const nextRun = channelSlotsData.getNextRunAt(fromDate, db);
+      const nextRunSlots = nextRun ? nextRun.getTime() : Infinity;
+      
+      // Also check intelligent schedules for next scrape
+      const intelligentUpcoming = intelligentSchedulesData.getUpcomingScrapes(db, 24 * 365); // 1 year ahead
+      if (process.env.DEBUG_SCHEDULE) {
+        console.log(`[DEBUG_SCHEDULE] getUpcomingScrapes returned ${intelligentUpcoming.length} schedules`);
+        if (intelligentUpcoming.length > 0) {
+          console.log(`[DEBUG_SCHEDULE]   first schedule:`, intelligentUpcoming[0]);
+        }
       }
-      return { nextRunAt };
+      const nextIntelligenScrape = intelligentUpcoming[0]
+        ? new Date(intelligentUpcoming[0].next_scrape_time).getTime()
+        : Infinity;
+      
+      if (process.env.DEBUG_SCHEDULE) {
+        const slotsStr = nextRunSlots === Infinity ? 'none' : new Date(nextRunSlots).toISOString();
+        const smartStr = nextIntelligenScrape === Infinity ? 'none' : new Date(nextIntelligenScrape).toISOString();
+        console.log('[DEBUG_SCHEDULE] CHANNEL_SLOTS_GET_NEXT_RUN: slots=', slotsStr, ' intelligent=', smartStr);
+      }
+      
+      // Return whichever is sooner
+      if (nextRunSlots <= nextIntelligenScrape && nextRun) {
+        return nextRun.toISOString();
+      } else if (nextIntelligenScrape < Infinity) {
+        return new Date(nextIntelligenScrape).toISOString();
+      }
+      return null;
     },
     [IpcChannels.CHANNEL_ANALYZE_SCHEDULE]: async (_event, ...args) => {
       const channelUrl = (args[0] as string)?.trim();
       if (!channelUrl) {
         return {
-          regular: false,
+          intelligentPrediction: null,
           suggestedSlots: [],
           message: "No channel URL provided.",
           videoCount: 0,
-          totalFetched: 0,
           error: "Missing channel URL",
         };
       }
-      const opts = (args[1] as { maxVideos?: number } | undefined) ?? {};
-      const ytDlpPath = ctx.options?.ytDlpPath ?? "yt-dlp";
-      const inferOpts: { ytDlpPath?: string; maxVideos?: number; timeoutMs?: number } = { ytDlpPath };
-      if (opts.maxVideos != null) inferOpts.maxVideos = opts.maxVideos;
-      return inferScheduleFromChannelUrl(channelUrl, inferOpts);
+      
+      try {
+        const ytDlpPath = ctx.options?.ytDlpPath ?? "yt-dlp";
+        const channelVideosUrl = channelUrl.trim().endsWith("/videos")
+          ? channelUrl
+          : `${channelUrl.replace(/\/$/, "")}/videos`;
+        
+        // Fetch with flat-playlist for quick analysis
+        const quickVideos = await listChannelVideos(ytDlpPath, channelVideosUrl, {
+          fullMetadata: false, // Fast: flat-playlist with approximate timestamps
+          maxVideos: 50,
+        });
+        
+        // Extract timestamps for analysis
+        let timestamps = quickVideos
+          .filter(v => v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp))
+          .map(v => v.releaseTimestamp as number);
+
+        // Detect date-only timestamps (flat-playlist / approximate_date returns midnight UTC)
+        const dateOnlyCount = quickVideos.reduce((s, v) => {
+          if (!v.releaseTimestamp) return s;
+          const d = new Date(v.releaseTimestamp * 1000);
+          return s + (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 ? 1 : 0);
+        }, 0);
+
+        // If majority of timestamps are date-only, fetch accurate timestamps (slower)
+        if (timestamps.length > 0 && dateOnlyCount / timestamps.length >= 0.6) {
+          if (process.env.DEBUG_SCHEDULE) console.log('[DEBUG_SCHEDULE] Detected date-only timestamps; fetching accurate timestamps (fullMetadata)');
+          try {
+            const accurate = await listChannelVideos(ytDlpPath, channelVideosUrl, { fullMetadata: true, maxVideos: 10 });
+            timestamps = accurate
+              .filter(v => v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp))
+              .map(v => v.releaseTimestamp as number);
+            if (process.env.DEBUG_SCHEDULE) console.log('[DEBUG_SCHEDULE] Fetched accurate timestamps count=', timestamps.length);
+          } catch (err) {
+            if (process.env.DEBUG_SCHEDULE) console.error('[DEBUG_SCHEDULE] failed to fetch accurate timestamps', err);
+          }
+        }
+        
+        let intelligentPrediction = null;
+        let suggestedSlots: { day_of_week: number; time_minutes: number }[] = [];
+        
+        if (timestamps.length >= 3) {
+          // Get intelligent prediction
+          const intelligentScheduler = new IntelligentScheduleService();
+          const plan = intelligentScheduler.analyzeTimestamps(timestamps);
+          if (process.env.DEBUG_SCHEDULE) {
+            try {
+              console.log('[DEBUG_SCHEDULE] quickVideos parsed timestamps:');
+              quickVideos.forEach(v => {
+                const ts = v.releaseTimestamp as number | undefined;
+                if (!ts) return console.log(`[DEBUG_SCHEDULE] id=${v.id} no timestamp`);
+                const utc = new Date(ts * 1000).toISOString();
+                const local = new Date(ts * 1000).toString();
+                const isDateOnlyUtcMidnight = new Date(ts * 1000).getUTCHours() === 0 && new Date(ts * 1000).getUTCMinutes() === 0;
+                console.log(`[DEBUG_SCHEDULE] id=${v.id} ts=${ts} utc=${utc} local=${local} dateOnlyUtcMidnight=${isDateOnlyUtcMidnight}`);
+              });
+              console.log('[DEBUG_SCHEDULE] intelligent scheduler plan:', plan);
+            } catch (e) {
+              console.error('[DEBUG_SCHEDULE] failed to print debug info', e);
+            }
+          }
+          intelligentPrediction = {
+            nextScrapeTime: plan.nextScrapeTime.toISOString(),
+            pattern: plan.pattern,
+            confidence: plan.confidence,
+            expectedVideos: plan.expectedVideos,
+            isErratic: plan.isErratic,
+          };
+          
+          // Extract suggested slots for manual mode
+          const dayTimeMap = new Map<number, number[]>();
+          
+          timestamps.forEach(ts => {
+            const date = new Date(ts * 1000);
+            const dayOfWeek = date.getUTCDay();
+            const timeMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+            
+            if (!dayTimeMap.has(dayOfWeek)) {
+              dayTimeMap.set(dayOfWeek, []);
+            }
+            dayTimeMap.get(dayOfWeek)!.push(timeMinutes);
+          });
+          
+          // For each day with uploads, calculate median time
+          dayTimeMap.forEach((times, dayOfWeek) => {
+            const sorted = times.sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)]!;
+            suggestedSlots.push({ day_of_week: dayOfWeek, time_minutes: Math.round(median) });
+          });
+          
+          suggestedSlots.sort((a, b) => a.day_of_week - b.day_of_week);
+        }
+        
+        return {
+          intelligentPrediction,
+          suggestedSlots,
+          videoCount: quickVideos.length,
+          message: timestamps.length < 3 ? "Not enough videos to generate schedule" : "Schedule analysis complete",
+        };
+      } catch (err) {
+        return {
+          intelligentPrediction: null,
+          suggestedSlots: [],
+          videoCount: 0,
+          error: `Failed to analyze channel: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     },
     [IpcChannels.CHANNEL_ANALYSIS_VIDEOS_SAVE]: async (_event, ...args) => {
       const channelId = args[0] as number;
       const videos = args[1] as { id: string; durationSeconds?: number; title?: string; releaseTimestamp: number }[];
-      if (!Array.isArray(videos)) return undefined;
+      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] CHANNEL_ANALYSIS_VIDEOS_SAVE called: args.length=${args.length} channelId=${channelId} videos=${videos ? videos.length : 'null'}`);
+      if (process.env.DEBUG_SCHEDULE && videos) console.log(`[DEBUG_SCHEDULE] videos array:`, videos.slice(0, 2));
+      if (!Array.isArray(videos)) {
+        if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] videos not an array, returning`);
+        return undefined;
+      }
       channelAnalysisVideosData.upsert(db, channelId, videos.map((v) => ({
         id: v.id,
         durationSeconds: v.durationSeconds ?? 0,
         title: v.title ?? "",
         releaseTimestamp: v.releaseTimestamp,
       })));
-      return undefined;
+      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] upserted ${videos.length} videos to channel_analysis_videos`);
+      // After saving analysis videos, update intelligent schedule
+      const scheduler = new IntelligentScheduleService();
+      const success = scheduler.updateChannelSchedule(db, channelId);
+      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] updateChannelSchedule channel=${channelId} success=${success}`);
+      // Return the newly created schedule
+      const schedule = intelligentSchedulesData.getChannelSchedule(db, channelId);
+      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] returned schedule:`, schedule);
+      return schedule;
     },
-    [IpcChannels.CHANNEL_ANALYSIS_RECOMPUTE_INTERVAL]: async (_event, ...args) => {
-      const channelId = args[0] as number;
-      channelAnalysisVideosData.capPerChannel(db, channelId);
-      const timestamps = channelAnalysisVideosData.getTimestampsForChannel(db, channelId);
-      const intervalMinutes = computeIntervalMinutesFromTimestamps(timestamps);
-      if (intervalMinutes != null) channelIntervalsData.set(db, channelId, intervalMinutes);
-      return intervalMinutes;
-    },
-    [IpcChannels.CHANNEL_INTERVAL_GET]: async (_event, ...args) => {
-      const channelId = args[0] as number;
-      return channelIntervalsData.getByChannelId(db, channelId);
-    },
-    [IpcChannels.CHANNEL_INTERVAL_SET]: async (_event, ...args) => {
-      const channelId = args[0] as number;
-      const intervalMinutes = args[1] as number;
-      return channelIntervalsData.set(db, channelId, intervalMinutes);
-    },
-    [IpcChannels.CHANNEL_INTERVAL_REMOVE]: async (_event, ...args) => {
-      const channelId = args[0] as number;
-      channelIntervalsData.remove(db, channelId);
-      return undefined;
+
+    [IpcChannels.CHANNEL_FETCH_ACCURATE_TIMESTAMPS]: async (_event, ...args) => {
+      const channelUrl = (args[0] as string)?.trim();
+      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] CHANNEL_FETCH_ACCURATE_TIMESTAMPS called with url=${channelUrl}`);
+      if (!channelUrl) {
+        return {
+          videos: [],
+          error: "Missing channel URL",
+        };
+      }
+      try {
+        const ytDlpPath = ctx.options?.ytDlpPath ?? "yt-dlp";
+        const channelVideosUrl = channelUrl.endsWith("/videos")
+          ? channelUrl
+          : `${channelUrl.replace(/\/$/, "")}/videos`;
+        
+        if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] fetching with fullMetadata=true from url=${channelVideosUrl}`);
+        // Fetch with full metadata (accurate timestamps, no flat-playlist)
+        // Limit to 10 videos to avoid long yt-dlp fetch times
+        const accurateVideos = await listChannelVideos(ytDlpPath, channelVideosUrl, {
+          fullMetadata: true,
+          maxVideos: 10,
+          timeoutMs: 300_000, // 5 minutes
+        });
+        
+        if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] CHANNEL_FETCH_ACCURATE_TIMESTAMPS fetched ${accurateVideos.length} videos`);
+        
+        const result = {
+          videos: accurateVideos.map(v => ({
+            id: v.id,
+            durationSeconds: v.durationSeconds,
+            title: v.title,
+            releaseTimestamp: v.releaseTimestamp,
+          })),
+          error: undefined,
+        };
+        if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] returning ${result.videos.length} videos`);
+        return result;
+      } catch (err) {
+        if (process.env.DEBUG_SCHEDULE) console.error(`[DEBUG_SCHEDULE] CHANNEL_FETCH_ACCURATE_TIMESTAMPS error:`, err instanceof Error ? err.message : err);
+        return {
+          videos: [],
+          error: `Failed to fetch accurate timestamps: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     },
 
     [IpcChannels.DOWNLOAD_TASKS_LIST]: async (_event, ...args) => {
@@ -295,6 +457,30 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     },
     [IpcChannels.DOWNLOAD_WORKER_GET_STATUS]: async () => {
       return { running: getDownloadWorkerRunning() };
+    },
+
+    [IpcChannels.INTELLIGENT_SCHEDULE_GET]: async (_event, ...args) => {
+      const channelId = args[0] as number;
+      return intelligentSchedulesData.getChannelSchedule(db, channelId);
+    },
+
+    [IpcChannels.INTELLIGENT_SCHEDULE_GET_UPCOMING]: async (_event, ...args) => {
+      const hoursAhead = (args[0] as number | undefined) ?? 24;
+      return intelligentSchedulesData.getUpcomingScrapes(db, hoursAhead);
+    },
+
+    [IpcChannels.INTELLIGENT_SCHEDULE_GET_OVERDUE]: async () => {
+      return intelligentSchedulesData.getOverdueScrapes(db);
+    },
+
+    [IpcChannels.INTELLIGENT_SCHEDULE_GET_STATS]: async () => {
+      return intelligentSchedulesData.getScheduleStats(db);
+    },
+
+    [IpcChannels.INTELLIGENT_SCHEDULE_REFRESH_ALL]: async () => {
+      const scheduler = new IntelligentScheduleService();
+      const updated = scheduler.refreshAllSchedules(db);
+      return { updated };
     },
 
     [IpcChannels.PROCESS_LOAD]: async () => {

@@ -39,7 +39,7 @@ export function listChannelVideos(
   const timeoutMs = options?.timeoutMs ?? (fullMetadata ? FULL_METADATA_TIMEOUT_MS : DEFAULT_YT_DLP_TIMEOUT_MS);
   const maxVideos = options?.maxVideos;
 
-  const args = ["--no-download", "--print", PRINT_FORMAT, "--no-warnings", "--quiet"];
+  const args = ["--no-download", "--print", PRINT_FORMAT, "--no-warnings", "--quiet", "--ignore-errors"];
   if (fullMetadata) {
     // No --flat-playlist: fetch each video's metadata for real upload time
   } else {
@@ -83,10 +83,7 @@ export function listChannelVideos(
     proc.on("close", (code, signal) => {
       cleanup();
       if (signal === "SIGKILL") return; // already rejected in timeout
-      if (code !== 0) {
-        reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`));
-        return;
-      }
+      
       const lines = stdout.trim().split("\n").filter(Boolean);
       const result: ScrapedVideo[] = [];
       for (const line of lines) {
@@ -96,11 +93,30 @@ export function listChannelVideos(
         const durationRaw = parts[1];
         const durationSeconds = durationRaw ? Number(durationRaw) : 0;
         const title = parts[2] ?? "";
-        const releaseTimestampRaw = parts[3];
-        const releaseTimestamp =
-          releaseTimestampRaw && /^\d+$/.test(releaseTimestampRaw.trim())
-            ? parseInt(releaseTimestampRaw.trim(), 10)
-            : null;
+        const releaseTimestampRaw = (parts[3] ?? "").trim();
+        let releaseTimestamp: number | null = null;
+        if (/^\d+$/.test(releaseTimestampRaw)) {
+          // yt-dlp may emit either a Unix timestamp (seconds) or an
+          // approximate date as YYYYMMDD (e.g. 20260304). Detect and
+          // convert YYYYMMDD / YYYY-MM-DD -> Unix seconds to avoid
+          // treating the numeric date as a tiny epoch value.
+          if (/^\d{8}$/.test(releaseTimestampRaw)) {
+            // YYYYMMDD -> UTC midnight of that date
+            const y = Number(releaseTimestampRaw.slice(0, 4));
+            const m = Number(releaseTimestampRaw.slice(4, 6)) - 1;
+            const d = Number(releaseTimestampRaw.slice(6, 8));
+            releaseTimestamp = Math.floor(Date.UTC(y, m, d, 0, 0, 0) / 1000);
+          } else if (/^\d{4}-\d{2}-\d{2}$/.test(releaseTimestampRaw)) {
+            // YYYY-MM-DD
+            const dt = new Date(releaseTimestampRaw + "T00:00:00Z");
+            releaseTimestamp = Math.floor(dt.getTime() / 1000);
+          } else {
+            // Assume it's already a Unix timestamp in seconds
+            releaseTimestamp = parseInt(releaseTimestampRaw, 10);
+          }
+        } else {
+          releaseTimestamp = null;
+        }
         if (id && isValidYoutubeVideoId(id)) {
           result.push({
             id,
@@ -110,15 +126,20 @@ export function listChannelVideos(
           });
         }
       }
-      if (process.env.DEBUG_SCRAPER && result.length === 0) {
-        if (lines.length === 0) {
-          process.stderr.write("[scraper] yt-dlp returned 0 lines (empty stdout). Check URL, cookies, or region.\n");
-        } else {
-          process.stderr.write(
-            `[scraper] yt-dlp returned ${lines.length} line(s) but 0 passed id check. First: ${lines.slice(0, 2).map((l) => JSON.stringify(l.slice(0, 120))).join(" | ")}\n`
-          );
-        }
+      
+      // If we got any videos, return them even if exit code is non-zero (some videos may have been skipped)
+      if (result.length > 0) {
+        resolve(result);
+        return;
       }
+      
+      // If no videos were extracted and exit code was non-zero, it's an error
+      if (code !== 0) {
+        reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`));
+        return;
+      }
+      
+      // Exit code 0 but no videos (empty channel or all videos were private/deleted)
       resolve(result);
     });
   });

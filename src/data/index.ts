@@ -4,3 +4,4 @@ export * from "./channelSlots.js";
 export * from "./videoDetails.js";
 export * from "./downloadHistory.js";
 export * from "./downloadTasks.js";
+export * from "./intelligentSchedules.js";
