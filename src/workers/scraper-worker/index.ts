@@ -3,9 +3,10 @@ import type Database from "better-sqlite3";
 import type { ChannelRow } from "../../types/index.js";
 import * as scraperDb from "./db.js";
 import * as channelAnalysisVideosData from "../../data/channelAnalysisVideos.js";
-import * as channelIntervalsData from "../../data/channelIntervals.js";
-import { computeIntervalMinutesFromTimestamps } from "./scheduleInference.js";
+
+
 import { listChannelVideos } from "./scrape.js";
+import { IntelligentScheduleService } from "./intelligentScheduleService.js";
 
 const DEFAULT_YT_DLP = "yt-dlp";
 const YOUTUBE_VIDEO_PREFIX = "https://www.youtube.com/watch?v=";
@@ -63,6 +64,7 @@ export class YouTubeChannelScraper {
   private newestOnlyMode: boolean;
   private newestFirstRunCount: number;
   private newestSubsequentLimit: number;
+  private intelligentScheduler: IntelligentScheduleService;
 
   constructor(options: YouTubeChannelScraperOptions) {
     this.dbPath = options.dbPath;
@@ -77,11 +79,18 @@ export class YouTubeChannelScraper {
     this.newestOnlyMode = options.newestOnlyMode ?? false;
     this.newestFirstRunCount = options.newestFirstRunCount ?? 15;
     this.newestSubsequentLimit = options.newestSubsequentLimit ?? 50;
+    this.intelligentScheduler = new IntelligentScheduleService();
   }
 
   start(): void {
     if (this.timerId !== null || this.scheduleTimeoutId !== null) return;
     this.stopped = false;
+    
+    // Handle offline scenario: check for missed scrapes and adjust scheduling
+    const db = openDb(this.dbPath);
+    this.intelligentScheduler.handleOfflineScenario(db);
+    db.close();
+    
     if (this.pollIntervalMs !== undefined && this.pollIntervalMs > 0) {
       this.db = openDb(this.dbPath);
       this.timerId = setInterval(() => this.tick(), this.pollIntervalMs);
@@ -108,8 +117,8 @@ export class YouTubeChannelScraper {
   }
 
   /**
-   * Run once, then sleep until the next channel_slot start from SQLite; repeat.
-   * When there are no slots or no next run, the scraper stops (no constant background polling).
+   * Run once, then sleep until the next scheduled scrape (intelligent or slot-based).
+   * Handles offline scenarios and prioritizes intelligent schedule predictions.
    */
   private runScheduleLoop = (): void => {
     if (this.stopped) return;
@@ -117,10 +126,27 @@ export class YouTubeChannelScraper {
       .then(() => {
         if (this.stopped) return;
         const db = openDb(this.dbPath);
-        const nextMs = scraperDb.getNextSlotStartMs(db, new Date());
+        
+        // Get next wake time from intelligent schedule
+        const intelligentMs = this.intelligentScheduler.getNextScheduledScrapeMs(db);
+        
+        // Get next wake time from traditional slot/interval schedule (fallback)
+        const slotMs = scraperDb.getNextSlotStartMs(db, new Date());
+        
+        // Use whichever comes first, or null if neither has schedules
+        let nextMs: number | null = null;
+        if (intelligentMs !== null && slotMs !== null) {
+          nextMs = Math.min(intelligentMs, slotMs);
+        } else if (intelligentMs !== null) {
+          nextMs = intelligentMs;
+        } else if (slotMs !== null) {
+          nextMs = slotMs;
+        }
+        
         db.close();
+        
         if (nextMs === null) {
-          if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules; stopping schedule loop");
+          if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules (intelligent or slot-based); stopping schedule loop");
           this.stop();
           return;
         }
@@ -174,7 +200,7 @@ export class YouTubeChannelScraper {
     if (this.db === null) db.close();
   }
 
-  /** Resolve channels to scrape: either one by id (with recently-checked) or schedule-due list. */
+  /** Resolve channels to scrape: prioritize intelligent schedule, fallback to slot/interval schedule. */
   private getChannelsToScrape(
     db: Database.Database,
     channelId?: number
@@ -191,12 +217,27 @@ export class YouTubeChannelScraper {
       }
       return Promise.resolve([c]);
     }
+
+    // First try intelligent schedule for channels with analysis data
+    const intelligentDueIds = this.intelligentScheduler.getChannelsDueForScrape(db);
+    if (intelligentDueIds.length > 0) {
+      if (process.env.DEBUG_SCRAPER) {
+        console.log("[scraper] found", intelligentDueIds.length, "channels due by intelligent schedule:", intelligentDueIds);
+      }
+      const channels = scraperDb.getChannelsByIds(db, intelligentDueIds, true);
+      const filtered = channels.filter((c) => !this.wasScrapedRecently(c));
+      if (filtered.length > 0) {
+        return Promise.resolve(filtered);
+      }
+    }
+
+    // Fallback to traditional slot/interval schedule
     if (!scraperDb.hasAnySchedules(db)) {
       if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules in DB; no channels to scrape (schedule mode)");
       return Promise.resolve([]);
     }
     const now = new Date();
-    const day = now.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+    const day = now.getDay();
     const currentTimeMinutes = now.getHours() * 60 + now.getMinutes();
     const dueNowIds = scraperDb.getDueChannelIds(
       db,
@@ -205,10 +246,9 @@ export class YouTubeChannelScraper {
       this.scheduleWindowMinutes
     );
     const pastDueIds = scraperDb.getPastDueChannelIds(db, now);
-    const intervalDueIds = scraperDb.getIntervalDueChannelIds(db, now);
-    const allIds = [...new Set([...dueNowIds, ...pastDueIds, ...intervalDueIds])];
+    const allIds = [...new Set([...dueNowIds, ...pastDueIds])];
     if (process.env.DEBUG_SCRAPER) {
-      console.log("[scraper] schedule check: day=", day, "timeMinutes=", currentTimeMinutes, "dueNowIds=", dueNowIds, "pastDueIds=", pastDueIds, "intervalDueIds=", intervalDueIds, "allIds=", allIds);
+      console.log("[scraper] slot-based schedule check: day=", day, "timeMinutes=", currentTimeMinutes, "dueNowIds=", dueNowIds, "pastDueIds=", pastDueIds, "allIds=", allIds);
     }
     if (allIds.length === 0) return Promise.resolve([]);
     const channels = scraperDb.getChannelsByIds(db, allIds, true);
@@ -254,26 +294,91 @@ export class YouTubeChannelScraper {
       ? (firstScrape ? this.newestFirstRunCount : this.newestSubsequentLimit)
       : (firstScrape ? 50 : undefined);
 
+    // ===== PASS 1: Quick flat-playlist scan to find new videos =====
     if (process.env.DEBUG_SCRAPER) {
       console.log(
-        "[scraper] fetching video list (yt-dlp) for channel",
+        "[scraper] PASS 1 (flat-playlist): fetching quick video list for channel",
         channel.id,
         channel.name,
-        maxVideos != null ? ` (latest ${maxVideos} only)` : "",
+        maxVideos != null ? ` (latest ${maxVideos})` : "",
         "..."
       );
     }
 
-    let videos;
+    let quickVideos;
     try {
-      videos = await listChannelVideos(this.ytDlpPath, channelUrl, {
+      quickVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
         ...(maxVideos !== undefined && { maxVideos }),
+        fullMetadata: false, // Fast scan, timestamps are date-only
       });
     } catch (err) {
       console.error(`[scraper] yt-dlp failed for channel ${channel.id}:`, err);
       return;
     }
 
+    // ===== Identify new videos =====
+    const latestAnalyzedTimestamp = firstScrape 
+      ? null 
+      : channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
+
+    const newVideoIds = new Set<string>();
+    let reachedKnownVideo = false;
+
+    for (const video of quickVideos) {
+      if (reachedKnownVideo) break; // Stop once we hit a video we've seen
+      
+      if (latestAnalyzedTimestamp != null && video.releaseTimestamp != null) {
+        if (video.releaseTimestamp <= latestAnalyzedTimestamp) {
+          reachedKnownVideo = true;
+          break; // This and all older videos are already known
+        }
+      }
+      newVideoIds.add(video.id);
+    }
+
+    if (process.env.DEBUG_SCRAPER) {
+      console.log(
+        `[scraper] found ${newVideoIds.size} new videos (out of ${quickVideos.length} in quick scan)`
+      );
+    }
+
+    // ===== PASS 2: Fetch accurate timestamps for NEW videos only =====
+    let videosWithAccurateTimestamps: typeof quickVideos = [];
+
+    if (newVideoIds.size > 0) {
+      if (process.env.DEBUG_SCRAPER) {
+        console.log(
+          "[scraper] PASS 2 (full metadata): fetching accurate timestamps for",
+          newVideoIds.size,
+          "new videos..."
+        );
+      }
+
+      try {
+        const fullMetadataVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
+          fullMetadata: true, // Get exact upload timestamps
+          maxVideos: newVideoIds.size + 5, // Fetch a few extra to ensure we catch all new ones
+        });
+
+        // Filter to only the new videos with accurate timestamps
+        videosWithAccurateTimestamps = fullMetadataVideos.filter((v) => newVideoIds.has(v.id));
+
+        if (process.env.DEBUG_SCRAPER) {
+          console.log(
+            `[scraper] retrieved accurate timestamps for ${videosWithAccurateTimestamps.length} new videos`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[scraper] failed to fetch full metadata for channel ${channel.id}:`,
+          err
+        );
+        // Fallback: use the quick videos (with date-only timestamps)
+        videosWithAccurateTimestamps = quickVideos.filter((v) => newVideoIds.has(v.id));
+      }
+    }
+
+    // ===== Process videos: duration filter, slot filter, queue downloads =====
     const minMins = channel.min_duration_minutes ?? 0;
     const maxMins =
       channel.max_duration_minutes != null && channel.max_duration_minutes > 0
@@ -282,33 +387,26 @@ export class YouTubeChannelScraper {
 
     const slots = this.newestOnlyMode ? [] : scraperDb.getSlotsByChannelId(db, channel.id);
 
-    const latestKnownTimestamp =
-      !firstScrape ? scraperDb.getLatestReleaseTimestampForChannel(db, channel.name) : null;
-
     let inRange = 0;
     let newTasks = 0;
-    const newlyQueuedVideos: typeof videos = [];
-    for (const v of videos) {
+    const analysisInputs: Parameters<typeof channelAnalysisVideosData.upsert>[2] = [];
+
+    for (const v of videosWithAccurateTimestamps) {
       if (this.stopped) break;
-      if (latestKnownTimestamp != null && v.releaseTimestamp != null && v.releaseTimestamp <= latestKnownTimestamp) continue;
+
       const durationMinutes = v.durationSeconds / 60;
       if (durationMinutes < minMins) continue;
       if (durationMinutes > maxMins) continue;
 
-      if (slots.length > 0) {
-        const uploadDayOfWeek =
-          v.releaseTimestamp != null
-            ? new Date(v.releaseTimestamp * 1000).getDay()
-            : 0;
-        const uploadTimeMinutes: number | null =
-          v.releaseTimestamp != null
-            ? (() => {
-                const d = new Date(v.releaseTimestamp * 1000);
-                return d.getHours() * 60 + d.getMinutes();
-              })()
-            : null;
+      if (slots.length > 0 && v.releaseTimestamp != null) {
+        const uploadDayOfWeek = new Date(v.releaseTimestamp * 1000).getDay();
+        const uploadTimeMinutes = (() => {
+          const d = new Date(v.releaseTimestamp * 1000);
+          return d.getHours() * 60 + d.getMinutes();
+        })();
         if (!scraperDb.isUploadInSlotWindow(slots, uploadDayOfWeek, uploadTimeMinutes)) continue;
       }
+
       inRange++;
 
       const videoUrl = `${YOUTUBE_VIDEO_PREFIX}${v.id}`;
@@ -325,28 +423,30 @@ export class YouTubeChannelScraper {
         video_url: videoUrl,
         channel_id: channel.id,
       });
+
       if (added) {
         newTasks++;
-        newlyQueuedVideos.push(v);
+        // Collect for intelligent schedule analysis
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        analysisInputs.push({
+          id: v.id,
+          durationSeconds: v.durationSeconds ?? 0,
+          title: v.title ?? "",
+          releaseTimestamp:
+            v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp)
+              ? v.releaseTimestamp
+              : nowSeconds,
+        });
       }
     }
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const analysisInputs = newlyQueuedVideos.map((v) => ({
-      id: v.id,
-      durationSeconds: v.durationSeconds ?? 0,
-      title: v.title ?? "",
-      releaseTimestamp:
-        v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp)
-          ? v.releaseTimestamp
-          : nowSeconds,
-    }));
+    // ===== Save timestamps for intelligent scheduler analysis =====
     if (analysisInputs.length > 0) {
       channelAnalysisVideosData.upsert(db, channel.id, analysisInputs);
       channelAnalysisVideosData.capPerChannel(db, channel.id);
-      const timestamps = channelAnalysisVideosData.getTimestampsForChannel(db, channel.id);
-      const intervalMinutes = computeIntervalMinutesFromTimestamps(timestamps);
-      if (intervalMinutes != null) channelIntervalsData.set(db, channel.id, intervalMinutes);
+
+      // Update intelligent schedule with improved data
+      this.intelligentScheduler.updateChannelSchedule(db, channel.id);
     }
 
     if (process.env.DEBUG_SCRAPER) {
@@ -354,15 +454,19 @@ export class YouTubeChannelScraper {
         "[scraper] channel",
         channel.id,
         channel.name,
-        "| videos listed:",
-        videos.length,
-        "| in duration range:",
+        "| quick scan:",
+        quickVideos.length,
+        "| new videos:",
+        newVideoIds.size,
+        "| accurate timestamps:",
+        videosWithAccurateTimestamps.length,
+        "| in range:",
         inRange,
-        "| new download tasks:",
+        "| queued:",
         newTasks,
-        "(min/max mins:",
+        "(mins:",
         minMins,
-        "/",
+        "-",
         maxMins === Number.POSITIVE_INFINITY ? "∞" : maxMins,
         ")"
       );

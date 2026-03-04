@@ -70,6 +70,21 @@ export function getTimestampsForChannel(
 }
 
 /**
+ * Get the latest (maximum) release_timestamp for a channel.
+ * Returns null if no analysis videos exist for the channel.
+ * Used to detect if we've already analyzed a video.
+ */
+export function getLatestTimestampForChannel(
+  db: Database.Database,
+  channelId: number
+): number | null {
+  const row = db
+    .prepare(`SELECT MAX(release_timestamp) as latest FROM ${TABLE} WHERE channel_id = ?`)
+    .get(channelId) as { latest: number | null } | undefined;
+  return row?.latest ?? null;
+}
+
+/**
  * Keep only the most recent MAX_VIDEOS_PER_CHANNEL rows per channel (by release_timestamp).
  * Deletes older rows so the table doesn't grow unbounded.
  */

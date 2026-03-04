@@ -39,11 +39,12 @@
     .analyze-basis { margin-top: 0.5rem; font-size: 0.85rem; color: #495057; }
     .analyze-caveat { color: #856404; background: #fff3cd; padding: 0.35rem; border-radius: 4px; }
     .add-channel-actions { margin-top: 0.5rem; }
+    .add-channel-actions button { margin-right: 0.35rem; margin-bottom: 0.25rem; }
   </style>
 </head>
 <body>
   <h1>Scraper: 1 schedule → many channels</h1>
-  <p style="color:#495057; font-size:0.9rem;">One schedule can have multiple channels. Each channel has its own run times. First run: 15 newest videos per channel; next runs: only new.</p>
+  <p style="color:#495057; font-size:0.9rem;">One schedule can have multiple channels. Each channel uses intelligent scheduling by default (analyzes upload patterns to predict optimal scrape time). You can also set manual run times. First run: 50 newest videos per channel; next runs: only new.</p>
 
   <section>
     <h2>1. Schedules</h2>
@@ -63,13 +64,13 @@
 
   <section>
     <h2>2. Channels in this schedule</h2>
-    <p id="channelsIntro">Select a schedule above to see and add channels. Run times are <strong>weekly recurring</strong> (e.g. Thu 9:00 = every Thursday at 9am).</p>
+    <p id="channelsIntro">Select a schedule above to see and add channels. Channels use intelligent scheduling by default (predicts optimal scrape time). You can also set manual run times (weekly recurring, e.g. Thu 9:00 = every Thursday at 9am).</p>
     <div id="channelsList"></div>
     <div id="addChannelSection" style="display:none; margin-top: 0.75rem;">
       <label>Add channel to this schedule</label>
       <div class="schedule-mode-row">
-        <label class="radio-label"><input type="radio" name="scheduleMode" value="auto" /> Auto-detect run times from channel</label>
-        <label class="radio-label"><input type="radio" name="scheduleMode" value="manual" checked /> Set run time manually</label>
+        <label class="radio-label"><input type="radio" name="scheduleMode" value="auto" /> Auto-detect with intelligent scheduler</label>
+        <label class="radio-label"><input type="radio" name="scheduleMode" value="manual" checked /> Set manual run times</label>
       </div>
       <div id="addChannelAuto" class="add-channel-block">
         <div class="add-channel-row">

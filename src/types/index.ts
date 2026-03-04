@@ -75,7 +75,8 @@ export interface ChannelSlotRow {
 }
 
 /**
- * Row from channel_intervals table. When set, channel is scraped every interval_minutes (no fixed day/time).
+ * @deprecated Row from channel_intervals table. Replaced by intelligent_schedule.
+ * When set, channel was scraped every interval_minutes (no fixed day/time).
  */
 export interface ChannelIntervalRow {
   channel_id: number;

@@ -27,15 +27,20 @@ export const IpcChannels = {
   /** Infer upload schedule from channel URL (last 50 videos). Returns suggested slots or irregular. */
   CHANNEL_ANALYZE_SCHEDULE: "toolkit:channelAnalyze:schedule",
 
-  // Channel intervals (when not scheduled: scrape every N minutes)
-  CHANNEL_INTERVAL_GET: "toolkit:channelInterval:get",
-  CHANNEL_INTERVAL_SET: "toolkit:channelInterval:set",
-  CHANNEL_INTERVAL_REMOVE: "toolkit:channelInterval:remove",
+  /** Fetch accurate timestamps for a channel (full metadata, no flat-playlist). Used after user confirms channel addition. */
+  CHANNEL_FETCH_ACCURATE_TIMESTAMPS: "toolkit:channelFetch:accurateTimestamps",
 
   /** Save videos used for interval inference (e.g. after analyze). Payload: channelId, videos[]. */
   CHANNEL_ANALYSIS_VIDEOS_SAVE: "toolkit:channelAnalysisVideos:save",
-  /** Recompute interval from channel_analysis_videos and update channel_intervals. */
+  /** @deprecated Recompute interval from channel_analysis_videos. Use intelligent_schedule instead. */
   CHANNEL_ANALYSIS_RECOMPUTE_INTERVAL: "toolkit:channelAnalysis:recomputeInterval",
+
+  // Intelligent schedule predictions (smart analysis-based scheduling)
+  INTELLIGENT_SCHEDULE_GET: "toolkit:intelligentSchedule:get",
+  INTELLIGENT_SCHEDULE_GET_UPCOMING: "toolkit:intelligentSchedule:getUpcoming",
+  INTELLIGENT_SCHEDULE_GET_OVERDUE: "toolkit:intelligentSchedule:getOverdue",
+  INTELLIGENT_SCHEDULE_GET_STATS: "toolkit:intelligentSchedule:getStats",
+  INTELLIGENT_SCHEDULE_REFRESH_ALL: "toolkit:intelligentSchedule:refreshAll",
 
   // Download tasks
   DOWNLOAD_TASKS_LIST: "toolkit:downloadTasks:list",

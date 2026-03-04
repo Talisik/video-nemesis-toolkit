@@ -81,10 +81,18 @@ export interface ScheduleInferenceResult {
   intervalBasis?: string;
   /** False when using channel listing: we only have upload *date* (yt-dlp gives midnight UTC per day), so the suggested hour is not the real upload time — it's just midnight UTC in your timezone. */
   timeIsExact?: boolean;
-  /** When adding via auto-detect, store in channel_intervals (not channel_slots). This is the suggested interval in minutes (e.g. 120 = every 2 hours). */
+  /** @deprecated Use intelligent_schedule instead. When adding via auto-detect, suggested interval in minutes (e.g. 120 = every 2 hours). */
   suggestedIntervalMinutes?: number;
   /** Videos used for inference (id, durationSeconds, title, releaseTimestamp). Save to channel_analysis_videos when adding channel. */
   analysisVideos?: { id: string; durationSeconds: number; title: string; releaseTimestamp: number }[];
+  /** Intelligent schedule prediction (fast preview based on approximate timestamps). */
+  intelligentPrediction?: {
+    nextScrapeTime: string; // ISO datetime
+    pattern: string;
+    confidence: number;
+    expectedVideos: number;
+    isErratic: boolean;
+  };
   /** Error message if fetch or inference failed. */
   error?: string;
 }

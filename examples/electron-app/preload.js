@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld("toolkit", {
     CHANNEL_SLOTS_ADD: "toolkit:channelSlots:add",
     CHANNEL_SLOTS_GET_NEXT_RUN: "toolkit:channelSlots:getNextRun",
     CHANNEL_ANALYZE_SCHEDULE: "toolkit:channelAnalyze:schedule",
+    CHANNEL_FETCH_ACCURATE_TIMESTAMPS: "toolkit:channelFetch:accurateTimestamps",
     CHANNEL_INTERVAL_GET: "toolkit:channelInterval:get",
     CHANNEL_INTERVAL_SET: "toolkit:channelInterval:set",
     CHANNEL_INTERVAL_REMOVE: "toolkit:channelInterval:remove",
