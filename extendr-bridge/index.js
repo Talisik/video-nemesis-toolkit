@@ -1,7 +1,8 @@
 /**
  * Extendr bridge for Video Nemesis Toolkit.
  * Export main() for Extendr; runs in the host app's main process and registers
- * the toolkit's IPC handlers (db, scraper, download worker).
+ * the toolkit's IPC handlers via Extendr's extension channels (Channelr) so the
+ * frontend uses window.extendr.extensions['nemesis-extension'][channelName]().
  */
 const path = require('path');
 const fs = require('fs');
@@ -9,10 +10,11 @@ const { pathToFileURL } = require('url');
 
 /**
  * Extendr entry point. Called by Deployr.setupMain() during host app ready.
- * @param {{ events: unknown }} _ - Extendr passes { events }; we do not use it for toolkit logic.
+ * @param {{ events: unknown, channels: { register: (name: string) => string }, electron: { app: object, ipcMain: object } }} args - Extendr passes events, channels (Channelr), and electron.
  */
-async function main(_) {
-  const { app, ipcMain } = require('electron');
+async function main(args) {
+  const { channels, electron } = args;
+  const { app, ipcMain } = electron;
 
   const dbPath = path.join(app.getPath('userData'), 'nemesis.db');
 
@@ -33,7 +35,12 @@ async function main(_) {
     toolkit = await import('video-nemesis-toolkit');
   }
 
-  toolkit.registerVideoNemesisIpcHandlers(ipcMain, options);
+  const customRegister = (channelName, handler) => {
+    const channelID = channels.register(channelName);
+    ipcMain.handle(channelID, handler);
+  };
+
+  toolkit.registerVideoNemesisIpcHandlers(ipcMain, options, customRegister);
 }
 
 module.exports = { main };

@@ -8,14 +8,22 @@ import { createIpcHandlers } from "./handlers.js";
 import type { IpcBridgeOptions } from "./types.js";
 import { IpcChannels } from "../types/enum/ipcChannels_enum.js";
 
+/** Optional custom registration: when provided, called for each (channelName, handler) instead of ipcMain.handle(channel, handler). Used by Extendr bridge to register via channel IDs. */
+export type RegisterIpcHandler = (
+  channelName: string,
+  handler: (event: unknown, ...args: unknown[]) => Promise<unknown>
+) => void;
+
 /**
  * Register all toolkit IPC handlers with Electron's ipcMain.
  * Call this from the Electron main process after ensuring schema (e.g. ensureSchema(dbPath)).
  * Creates and holds a DownloadWorker and (when available) a scraper; start/stop them via IPC.
+ * If `register` is provided, calls it for each (channelName, handler) instead of ipcMain.handle(channel, handler).
  */
 export function registerIpcHandlers(
   ipcMain: IpcMain,
-  options: IpcBridgeOptions
+  options: IpcBridgeOptions,
+  register?: RegisterIpcHandler
 ): void {
   const db = openDb(options.dbPath);
   runMigrations(db);
@@ -67,7 +75,12 @@ export function registerIpcHandlers(
     getScraper: () => scraper,
   });
 
-  for (const [channel, handler] of Object.entries(handlers)) {
-    ipcMain.handle(channel, handler as (event: unknown, ...args: unknown[]) => Promise<unknown>);
+  for (const [channelName, handler] of Object.entries(handlers)) {
+    const typedHandler = handler as (event: unknown, ...args: unknown[]) => Promise<unknown>;
+    if (register !== undefined) {
+      register(channelName, typedHandler);
+    } else {
+      ipcMain.handle(channelName, typedHandler);
+    }
   }
 }
