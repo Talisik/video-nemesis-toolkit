@@ -12,6 +12,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app, BrowserWindow, ipcMain } from "electron";
 
+// Disable Chromium sandbox on Linux when chrome-sandbox is not set up (avoids SUID 4755 requirement)
+app.commandLine.appendSwitch("no-sandbox");
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Use project video-nemesis.db (same as npm run seed) when run from repo root
 const dbPath = path.join(process.cwd(), "video-nemesis.db");

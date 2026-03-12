@@ -33,6 +33,7 @@
     "bench:scraper-phases:gc": "node --expose-gc scripts/benchmark-scraper-phases.js",
     "bench:scraper-phases:scrape": "node scripts/benchmark-scraper-phases.js --scrape=1",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "rebuild:host": "electron-rebuild -f -w better-sqlite3 -v 33.3.1",
     "example:electron": "npm run build && npm run rebuild && npx electron examples/electron-app/main.js"
   },
   "repository": {
