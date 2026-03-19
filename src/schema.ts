@@ -57,6 +57,7 @@ export function runMigrations(db: Database.Database): void {
     download_subtitles INTEGER NOT NULL DEFAULT 0,
     download_thumbnails INTEGER NOT NULL DEFAULT 0,
     last_scraped_at TEXT,
+    first_scrape_limit INTEGER,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

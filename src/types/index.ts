@@ -59,6 +59,7 @@ export interface ChannelRow {
   download_subtitles: number;
   download_thumbnails: number;
   last_scraped_at: string | null;
+  first_scrape_limit?: number | null;
   active: number;
   created_at: string;
   updated_at: string;

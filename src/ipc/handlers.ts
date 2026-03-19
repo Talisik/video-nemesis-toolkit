@@ -60,6 +60,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         download_format?: string;
         download_subtitles?: number;
         download_thumbnails?: number;
+        first_scrape_limit?: number | null;
         active?: number;
       };
       return channelsData.createChannel(db, {
@@ -75,6 +76,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         download_subtitles: payload.download_subtitles ?? 0,
         download_thumbnails: payload.download_thumbnails ?? 0,
         last_scraped_at: null,
+        first_scrape_limit: payload.first_scrape_limit ?? null,
         active: payload.active ?? 1,
       });
     },
@@ -91,6 +93,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         download_format: string;
         download_subtitles: number;
         download_thumbnails: number;
+        first_scrape_limit: number | null;
         active: number;
       }>;
       const mapped: Parameters<typeof channelsData.updateChannel>[2] = {};
@@ -104,6 +107,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       if (updates?.download_format !== undefined) mapped.download_format = updates.download_format;
       if (updates?.download_subtitles !== undefined) mapped.download_subtitles = updates.download_subtitles;
       if (updates?.download_thumbnails !== undefined) mapped.download_thumbnails = updates.download_thumbnails;
+      if (updates?.first_scrape_limit !== undefined) mapped.first_scrape_limit = updates.first_scrape_limit;
       if (updates?.active !== undefined) mapped.active = updates.active;
       if (Object.keys(mapped).length > 0) channelsData.updateChannel(db, id, mapped);
       return channelsData.getChannelById(db, id);
@@ -121,7 +125,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     },
 
     [IpcChannels.SCHEDULES_LIST]: async () => {
-      return schedulesData.listSchedules(db);
+      return schedulesData.listSchedulesWithNextScrape(db);
     },
     [IpcChannels.SCHEDULES_GET]: async (_event, ...args) => {
       const id = args[0] as number;

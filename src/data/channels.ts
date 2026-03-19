@@ -3,7 +3,7 @@ import type { ChannelRow } from "../types/index.js";
 
 const TABLE = "channels";
 const COLS =
-  "id, schedule_id, url, name, all_words, any_words, none_words, min_duration_minutes, max_duration_minutes, download_format, download_subtitles, download_thumbnails, last_scraped_at, active, created_at, updated_at";
+  "id, schedule_id, url, name, all_words, any_words, none_words, min_duration_minutes, max_duration_minutes, download_format, download_subtitles, download_thumbnails, last_scraped_at, first_scrape_limit, active, created_at, updated_at";
 
 export function listChannels(
   db: Database.Database,
@@ -47,8 +47,8 @@ export function createChannel(
 ): ChannelRow {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO ${TABLE} (schedule_id, url, name, all_words, any_words, none_words, min_duration_minutes, max_duration_minutes, download_format, download_subtitles, download_thumbnails, last_scraped_at, active, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO ${TABLE} (schedule_id, url, name, all_words, any_words, none_words, min_duration_minutes, max_duration_minutes, download_format, download_subtitles, download_thumbnails, last_scraped_at, first_scrape_limit, active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     row.schedule_id,
     row.url,
@@ -62,6 +62,7 @@ export function createChannel(
     row.download_subtitles ?? 0,
     row.download_thumbnails ?? 0,
     row.last_scraped_at ?? null,
+    row.first_scrape_limit ?? null,
     row.active ?? 1,
     now,
     now
@@ -84,6 +85,7 @@ type ChannelUpdate = Partial<
     | "download_subtitles"
     | "download_thumbnails"
     | "last_scraped_at"
+    | "first_scrape_limit"
     | "active"
   >
 >;
@@ -108,6 +110,7 @@ export function updateChannel(
     ["download_subtitles", "download_subtitles"],
     ["download_thumbnails", "download_thumbnails"],
     ["last_scraped_at", "last_scraped_at"],
+    ["first_scrape_limit", "first_scrape_limit"],
     ["active", "active"],
   ];
   for (const [key, col] of map) {

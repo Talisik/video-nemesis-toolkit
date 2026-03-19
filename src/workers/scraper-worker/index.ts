@@ -283,6 +283,7 @@ export class YouTubeChannelScraper {
       min_duration_minutes: number | null;
       max_duration_minutes: number | null;
       last_scraped_at: string | null;
+      first_scrape_limit?: number | null;
     }
   ): Promise<void> {
     const channelUrl = channel.url.trim().endsWith("/videos")
@@ -292,7 +293,9 @@ export class YouTubeChannelScraper {
     const firstScrape = !channel.last_scraped_at;
     const maxVideos = this.newestOnlyMode
       ? (firstScrape ? this.newestFirstRunCount : this.newestSubsequentLimit)
-      : (firstScrape ? 50 : undefined);
+      : (firstScrape
+          ? (channel.first_scrape_limit ?? 50)
+          : undefined);
 
     // ===== PASS 1: Quick flat-playlist scan to find new videos =====
     if (process.env.DEBUG_SCRAPER) {
