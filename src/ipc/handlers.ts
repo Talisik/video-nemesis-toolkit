@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { IpcChannels } from "../types/enum/ipcChannels_enum.js";
 import * as channelsData from "../data/channels.js";
-import { listChannelVideos } from "../workers/scraper-worker/scrape.js";
+import { listChannelVideos, fetchChannelDetails } from "../workers/scraper-worker/scrape.js";
 import * as schedulesData from "../data/schedules.js";
 import * as channelSlotsData from "../data/channelSlots.js";
 
@@ -485,6 +485,24 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       const scheduler = new IntelligentScheduleService();
       const updated = scheduler.refreshAllSchedules(db);
       return { updated };
+    },
+
+    [IpcChannels.CHANNEL_FETCH_DETAILS]: async (_event, ...args) => {
+      const channelUrl = (args[0] as string)?.trim();
+      const opts = args[1] as { maxVideoCount?: number } | undefined;
+      if (!channelUrl) {
+        return { error: "Missing channel URL" };
+      }
+      try {
+        const ytDlpPath = ctx.options?.ytDlpPath ?? "yt-dlp";
+        return await fetchChannelDetails(ytDlpPath, channelUrl,
+          opts?.maxVideoCount != null ? { maxVideoCount: opts.maxVideoCount } : undefined,
+        );
+      } catch (err) {
+        return {
+          error: `Failed to fetch channel details: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     },
 
     [IpcChannels.PROCESS_LOAD]: async () => {

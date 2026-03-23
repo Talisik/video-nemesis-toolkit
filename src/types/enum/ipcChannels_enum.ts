@@ -70,6 +70,9 @@ export const IpcChannels = {
   /** Main → renderer: scraper status (payload: { phase: 'sleeping'|'running'|'finished'|'idle', nextRunAt?: string }). */
   SCRAPER_STATUS: "toolkit:scraper:status",
 
+  /** Fetch channel details (name, avatar, subscribers, video count, site) from a channel URL via yt-dlp. */
+  CHANNEL_FETCH_DETAILS: "toolkit:channel:fetchDetails",
+
   /** Renderer → main: get process load (memory + CPU). Returns { memory: { rss, heapUsed, heapTotal, external }, cpu: { user, system } }. */
   PROCESS_LOAD: "toolkit:process:load",
 } as const;

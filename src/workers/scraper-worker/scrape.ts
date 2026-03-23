@@ -7,6 +7,132 @@ import { spawn } from "node:child_process";
  */
 const PRINT_FORMAT = "%(id)s\t%(duration)s\t%(title)s\t%(timestamp)s";
 
+const CHANNEL_DETAILS_TIMEOUT_MS = 60_000; // 1 min
+const VIDEO_COUNT_LIMIT = 100;
+
+export interface ChannelDetails {
+  channelName: string;
+  avatarUrl: string | null;
+  subscriberCount: number | null;
+  videoCount: string;
+  site: string;
+}
+
+/**
+ * Fetch channel-level metadata from a channel URL using yt-dlp --dump-single-json.
+ * Video count is capped: if a channel has more than 100 videos, returns "100+".
+ */
+export function fetchChannelDetails(
+  ytDlpPath: string,
+  channelUrl: string,
+  options?: { timeoutMs?: number; maxVideoCount?: number }
+): Promise<ChannelDetails> {
+  const timeoutMs = options?.timeoutMs ?? CHANNEL_DETAILS_TIMEOUT_MS;
+  const maxVideoCount = options?.maxVideoCount ?? VIDEO_COUNT_LIMIT;
+
+  // Ensure we hit the /videos tab for consistent metadata
+  const videosUrl = channelUrl.trim().endsWith("/videos")
+    ? channelUrl
+    : `${channelUrl.replace(/\/$/, "")}/videos`;
+
+  const args = [
+    "--dump-single-json",
+    "--flat-playlist",
+    "--playlist-end", String(maxVideoCount + 1),
+    "--no-warnings",
+    "--quiet",
+    "--ignore-errors",
+    videosUrl,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    let stdout = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    const timeout = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error(`yt-dlp timed out after ${timeoutMs / 1000}s fetching channel details.`));
+    }, timeoutMs);
+
+    function cleanup() {
+      clearTimeout(timeout);
+    }
+
+    proc.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    proc.on("close", (code, signal) => {
+      cleanup();
+      if (signal === "SIGKILL") return;
+
+      if (!stdout.trim()) {
+        reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`));
+        return;
+      }
+
+      let json: Record<string, unknown>;
+      try {
+        json = JSON.parse(stdout);
+      } catch {
+        reject(new Error(`Failed to parse yt-dlp JSON output: ${stdout.slice(0, 200)}`));
+        return;
+      }
+
+      // Channel name
+      const channelName =
+        (json.channel as string | undefined) ??
+        (json.uploader as string | undefined) ??
+        (json.title as string | undefined) ??
+        "Unknown";
+
+      // Avatar URL — find avatar_uncropped or id "7" in thumbnails array
+      let avatarUrl: string | null = null;
+      const thumbnails = json.thumbnails as { id?: string; url?: string }[] | undefined;
+      if (Array.isArray(thumbnails)) {
+        const avatar =
+          thumbnails.find((t) => t.id === "avatar_uncropped") ??
+          thumbnails.find((t) => t.id === "7");
+        if (avatar?.url) avatarUrl = avatar.url;
+      }
+
+      // Subscriber count
+      const subscriberCount =
+        typeof json.channel_follower_count === "number"
+          ? (json.channel_follower_count as number)
+          : null;
+
+      // Video count — count entries array, cap at limit
+      const entries = json.entries as unknown[] | undefined;
+      const entryCount = Array.isArray(entries) ? entries.length : 0;
+      const videoCount =
+        entryCount > maxVideoCount ? `${maxVideoCount}+` : String(entryCount);
+
+      // Site name — derive from extractor
+      const extractor = (json.extractor as string | undefined) ?? "";
+      const site = extractor.replace(/:.*$/, "") || "unknown";
+
+      resolve({
+        channelName,
+        avatarUrl,
+        subscriberCount,
+        videoCount,
+        site,
+      });
+    });
+  });
+}
+
 /** YouTube video IDs are 11 chars, alphanumeric + hyphen + underscore. */
 const YOUTUBE_VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
 
