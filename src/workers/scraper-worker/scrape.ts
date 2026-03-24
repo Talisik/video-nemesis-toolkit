@@ -134,11 +134,23 @@ export function fetchChannelDetails(
 }
 
 /**
+ * Probe the 10 most recent videos via flat-playlist + approximate_date to determine
+ * upload frequency. If the 10 videos span < MIN_PROBE_SPAN_DAYS, the channel is
+ * high-frequency (e.g. news) and we use flat-playlist for the full fetch (date-only).
+ * Otherwise we use full metadata (exact timestamps).
+ */
+const PROBE_COUNT = 10;
+const MIN_PROBE_SPAN_DAYS = 3;
+const PROBE_TIMEOUT_MS = 15_000;
+
+/**
  * Fetch upload dates for a channel's videos uploaded on or after a given date.
- * Uses yt-dlp --dateafter + --break-on-reject for full metadata with early stopping.
+ * Automatically picks the right strategy based on upload frequency:
+ * - Low-frequency channels: full metadata with exact timestamps.
+ * - High-frequency channels: flat-playlist with date-only (HH:mm:ss = 00:00:00).
  * Returns an array of date-time strings in "YYYY-MM-DD HH:mm:ss" format (UTC).
  */
-export function listChannelUploadDates(
+export async function listChannelUploadDates(
   ytDlpPath: string,
   channelUrl: string,
   options?: { daysBack?: number; timeoutMs?: number }
@@ -148,13 +160,75 @@ export function listChannelUploadDates(
 
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - daysBack);
-  // yt-dlp --dateafter expects YYYYMMDD
+  const cutoffTs = Math.floor(cutoff.getTime() / 1000);
   const dateAfter = cutoff.toISOString().slice(0, 10).replace(/-/g, "");
 
-  const printFmt = "%(id)s\t%(timestamp)s";
+  const highFreq = await probeIsHighFrequency(ytDlpPath, channelUrl);
+
+  if (highFreq) {
+    return fetchUploadDatesFlat(ytDlpPath, channelUrl, cutoffTs);
+  }
+  return fetchUploadDatesFull(ytDlpPath, channelUrl, dateAfter, cutoffTs, timeoutMs);
+}
+
+/**
+ * Probe: fetch 10 most recent videos via flat-playlist + approximate_date.
+ * Returns true if the channel is high-frequency (span < MIN_PROBE_SPAN_DAYS).
+ */
+function probeIsHighFrequency(ytDlpPath: string, channelUrl: string): Promise<boolean> {
+  const args = [
+    "--no-download", "--flat-playlist",
+    "--extractor-args", "youtubetab:approximate_date",
+    "--print", "%(timestamp)s",
+    "--no-warnings", "--quiet", "--ignore-errors",
+    "--playlist-end", String(PROBE_COUNT),
+    channelUrl,
+  ];
+
+  return new Promise((resolve) => {
+    const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    let stdout = "";
+    proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      resolve(false); // on timeout, assume low-frequency (safer: use full metadata)
+    }, PROBE_TIMEOUT_MS);
+
+    proc.on("error", () => { clearTimeout(timer); resolve(false); });
+
+    proc.on("close", (_code, signal) => {
+      clearTimeout(timer);
+      if (signal === "SIGKILL") return;
+
+      const timestamps = stdout.trim().split("\n")
+        .map((l) => l.trim())
+        .filter((l) => /^\d+$/.test(l))
+        .map((l) => parseInt(l, 10))
+        .filter((ts) => Number.isFinite(ts));
+
+      if (timestamps.length < 2) { resolve(false); return; }
+
+      const minTs = Math.min(...timestamps);
+      const maxTs = Math.max(...timestamps);
+      const spanDays = (maxTs - minTs) / (24 * 3600);
+
+      resolve(spanDays < MIN_PROBE_SPAN_DAYS);
+    });
+  });
+}
+
+/**
+ * Full metadata path: exact timestamps. Uses --dateafter + --break-on-reject for early stopping.
+ */
+function fetchUploadDatesFull(
+  ytDlpPath: string, channelUrl: string,
+  dateAfter: string, cutoffTs: number, timeoutMs: number,
+): Promise<string[]> {
   const args = [
     "--no-download",
-    "--print", printFmt,
+    "--print", "%(id)s\t%(timestamp)s",
     "--no-warnings", "--quiet", "--ignore-errors",
     "--dateafter", dateAfter, "--break-on-reject",
     channelUrl,
@@ -165,7 +239,6 @@ export function listChannelUploadDates(
 
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-
     let stderr = "";
     proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
@@ -180,42 +253,112 @@ export function listChannelUploadDates(
       clearTimeout(timer);
       if (signal === "SIGKILL") return;
 
-      const lines = stdout.trim().split("\n").filter(Boolean);
-      const dates: string[] = [];
-      const cutoffTs = Math.floor(cutoff.getTime() / 1000);
-
-      for (const line of lines) {
-        const parts = line.split("\t");
-        const raw = (parts[1] ?? "").trim();
-        if (!raw) continue;
-
-        let ts: number | null = null;
-        if (/^\d{8}$/.test(raw)) {
-          const y = Number(raw.slice(0, 4));
-          const m = Number(raw.slice(4, 6)) - 1;
-          const d = Number(raw.slice(6, 8));
-          ts = Math.floor(Date.UTC(y, m, d, 0, 0, 0) / 1000);
-        } else if (/^\d+$/.test(raw)) {
-          ts = parseInt(raw, 10);
-        }
-
-        if (ts != null && Number.isFinite(ts) && ts >= cutoffTs) {
-          const dt = new Date(ts * 1000);
-          const yyyy = dt.getUTCFullYear();
-          const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
-          const dd = String(dt.getUTCDate()).padStart(2, "0");
-          const hh = String(dt.getUTCHours()).padStart(2, "0");
-          const mi = String(dt.getUTCMinutes()).padStart(2, "0");
-          const ss = String(dt.getUTCSeconds()).padStart(2, "0");
-          dates.push(`${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`);
-        }
-      }
-
+      const dates = parseTimestampLines(stdout, cutoffTs);
       if (dates.length > 0) { resolve(dates); return; }
       if (code !== 0) { reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`)); return; }
       resolve(dates);
     });
   });
+}
+
+/**
+ * Flat-playlist path: date-only (fast). Uses approximate_date extractor arg.
+ * Filters by cutoff in JS since --dateafter can't handle NA entries.
+ */
+function fetchUploadDatesFlat(
+  ytDlpPath: string, channelUrl: string, cutoffTs: number,
+): Promise<string[]> {
+  const args = [
+    "--no-download", "--flat-playlist",
+    "--extractor-args", "youtubetab:approximate_date",
+    "--print", "%(id)s\t%(timestamp)s",
+    "--no-warnings", "--quiet", "--ignore-errors",
+    channelUrl,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    let stdout = "";
+    proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    // Track whether we've seen a valid timestamp older than cutoff — means we've passed
+    // the date boundary and can stop (channel listing is newest-first).
+    let seenOlderThanCutoff = false;
+    const checkAndKill = () => {
+      if (seenOlderThanCutoff) return;
+      const lines = stdout.split("\n");
+      for (const line of lines) {
+        const raw = (line.split("\t")[1] ?? "").trim();
+        if (!/^\d+$/.test(raw)) continue;
+        const ts = parseInt(raw, 10);
+        if (Number.isFinite(ts) && ts < cutoffTs) {
+          seenOlderThanCutoff = true;
+          proc.kill("SIGTERM");
+          return;
+        }
+      }
+    };
+    // Periodically check if we've passed the cutoff
+    const pollInterval = setInterval(checkAndKill, 2000);
+
+    const timer = setTimeout(() => {
+      clearInterval(pollInterval);
+      proc.kill("SIGKILL");
+      reject(new Error("yt-dlp timed out fetching upload dates (flat-playlist)."));
+    }, FULL_METADATA_TIMEOUT_MS);
+
+    proc.on("error", (err) => { clearTimeout(timer); clearInterval(pollInterval); reject(err); });
+
+    proc.on("close", (_code, signal) => {
+      clearTimeout(timer);
+      clearInterval(pollInterval);
+      if (signal === "SIGKILL") return;
+
+      const dates = parseTimestampLines(stdout, cutoffTs);
+      resolve(dates);
+    });
+  });
+}
+
+/**
+ * Parse yt-dlp output lines ("id\ttimestamp") into formatted date strings.
+ * Handles both Unix epoch seconds and YYYYMMDD date-only formats.
+ */
+function parseTimestampLines(stdout: string, cutoffTs: number): string[] {
+  const lines = stdout.trim().split("\n").filter(Boolean);
+  const dates: string[] = [];
+
+  for (const line of lines) {
+    const parts = line.split("\t");
+    const raw = (parts[1] ?? "").trim();
+    if (!raw) continue;
+
+    let ts: number | null = null;
+    if (/^\d{8}$/.test(raw)) {
+      const y = Number(raw.slice(0, 4));
+      const m = Number(raw.slice(4, 6)) - 1;
+      const d = Number(raw.slice(6, 8));
+      ts = Math.floor(Date.UTC(y, m, d, 0, 0, 0) / 1000);
+    } else if (/^\d+$/.test(raw)) {
+      ts = parseInt(raw, 10);
+    }
+
+    if (ts != null && Number.isFinite(ts) && ts >= cutoffTs) {
+      const dt = new Date(ts * 1000);
+      const yyyy = dt.getUTCFullYear();
+      const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(dt.getUTCDate()).padStart(2, "0");
+      const hh = String(dt.getUTCHours()).padStart(2, "0");
+      const mi = String(dt.getUTCMinutes()).padStart(2, "0");
+      const ss = String(dt.getUTCSeconds()).padStart(2, "0");
+      dates.push(`${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`);
+    }
+  }
+
+  return dates;
 }
 
 /** YouTube video IDs are 11 chars, alphanumeric + hyphen + underscore. */
