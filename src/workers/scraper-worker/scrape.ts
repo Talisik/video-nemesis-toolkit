@@ -135,7 +135,7 @@ export function fetchChannelDetails(
 
 /**
  * Fetch upload dates for a channel's videos uploaded on or after a given date.
- * Uses yt-dlp --dateafter + full metadata for accurate timestamps.
+ * Uses yt-dlp --dateafter + --break-on-reject for full metadata with early stopping.
  * Returns an array of date-time strings in "YYYY-MM-DD HH:mm:ss" format (UTC).
  */
 export function listChannelUploadDates(
@@ -156,7 +156,7 @@ export function listChannelUploadDates(
     "--no-download",
     "--print", printFmt,
     "--no-warnings", "--quiet", "--ignore-errors",
-    "--dateafter", dateAfter,
+    "--dateafter", dateAfter, "--break-on-reject",
     channelUrl,
   ];
 
