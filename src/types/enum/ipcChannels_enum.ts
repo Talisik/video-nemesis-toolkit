@@ -73,6 +73,12 @@ export const IpcChannels = {
   /** Fetch channel details (name, avatar, subscribers, video count, site) from a channel URL via yt-dlp. */
   CHANNEL_FETCH_DETAILS: "toolkit:channel:fetchDetails",
 
+  /** Unified weekly schedule: returns all scrape events (intelligent + manual slots) for the current week, sorted by time. */
+  GET_THIS_WEEK_SCHED: "toolkit:schedule:getThisWeekSched",
+
+  /** Fetch upload dates for a channel via yt-dlp --dateafter. Args: channelUrl, daysBack? (default 90). Returns string[] of "YYYY-MM-DD HH:mm:ss" (UTC). */
+  CHANNEL_FETCH_UPLOAD_DATES: "toolkit:channel:fetchUploadDates",
+
   /** Renderer → main: get process load (memory + CPU). Returns { memory: { rss, heapUsed, heapTotal, external }, cpu: { user, system } }. */
   PROCESS_LOAD: "toolkit:process:load",
 } as const;

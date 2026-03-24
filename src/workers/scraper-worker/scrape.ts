@@ -133,6 +133,91 @@ export function fetchChannelDetails(
   });
 }
 
+/**
+ * Fetch upload dates for a channel's videos uploaded on or after a given date.
+ * Uses yt-dlp --dateafter + full metadata for accurate timestamps.
+ * Returns an array of date-time strings in "YYYY-MM-DD HH:mm:ss" format (UTC).
+ */
+export function listChannelUploadDates(
+  ytDlpPath: string,
+  channelUrl: string,
+  options?: { daysBack?: number; timeoutMs?: number }
+): Promise<string[]> {
+  const daysBack = options?.daysBack ?? 90;
+  const timeoutMs = options?.timeoutMs ?? FULL_METADATA_TIMEOUT_MS;
+
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - daysBack);
+  // yt-dlp --dateafter expects YYYYMMDD
+  const dateAfter = cutoff.toISOString().slice(0, 10).replace(/-/g, "");
+
+  const printFmt = "%(id)s\t%(timestamp)s";
+  const args = [
+    "--no-download",
+    "--print", printFmt,
+    "--no-warnings", "--quiet", "--ignore-errors",
+    "--dateafter", dateAfter,
+    channelUrl,
+  ];
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    let stdout = "";
+    proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+
+    let stderr = "";
+    proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error(`yt-dlp timed out after ${timeoutMs / 1000}s fetching upload dates.`));
+    }, timeoutMs);
+
+    proc.on("error", (err) => { clearTimeout(timer); reject(err); });
+
+    proc.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (signal === "SIGKILL") return;
+
+      const lines = stdout.trim().split("\n").filter(Boolean);
+      const dates: string[] = [];
+      const cutoffTs = Math.floor(cutoff.getTime() / 1000);
+
+      for (const line of lines) {
+        const parts = line.split("\t");
+        const raw = (parts[1] ?? "").trim();
+        if (!raw) continue;
+
+        let ts: number | null = null;
+        if (/^\d{8}$/.test(raw)) {
+          const y = Number(raw.slice(0, 4));
+          const m = Number(raw.slice(4, 6)) - 1;
+          const d = Number(raw.slice(6, 8));
+          ts = Math.floor(Date.UTC(y, m, d, 0, 0, 0) / 1000);
+        } else if (/^\d+$/.test(raw)) {
+          ts = parseInt(raw, 10);
+        }
+
+        if (ts != null && Number.isFinite(ts) && ts >= cutoffTs) {
+          const dt = new Date(ts * 1000);
+          const yyyy = dt.getUTCFullYear();
+          const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+          const dd = String(dt.getUTCDate()).padStart(2, "0");
+          const hh = String(dt.getUTCHours()).padStart(2, "0");
+          const mi = String(dt.getUTCMinutes()).padStart(2, "0");
+          const ss = String(dt.getUTCSeconds()).padStart(2, "0");
+          dates.push(`${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`);
+        }
+      }
+
+      if (dates.length > 0) { resolve(dates); return; }
+      if (code !== 0) { reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`)); return; }
+      resolve(dates);
+    });
+  });
+}
+
 /** YouTube video IDs are 11 chars, alphanumeric + hyphen + underscore. */
 const YOUTUBE_VIDEO_ID_REGEX = /^[A-Za-z0-9_-]{11}$/;
 

@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { IpcChannels } from "../types/enum/ipcChannels_enum.js";
 import * as channelsData from "../data/channels.js";
-import { listChannelVideos, fetchChannelDetails } from "../workers/scraper-worker/scrape.js";
+import { listChannelVideos, listChannelUploadDates, fetchChannelDetails } from "../workers/scraper-worker/scrape.js";
 import * as schedulesData from "../data/schedules.js";
 import * as channelSlotsData from "../data/channelSlots.js";
 
@@ -501,6 +501,102 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       } catch (err) {
         return {
           error: `Failed to fetch channel details: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    },
+
+    [IpcChannels.GET_THIS_WEEK_SCHED]: async () => {
+      // Week boundaries: Monday 00:00 → Sunday 23:59 (local time)
+      const now = new Date();
+      const dayOfWeek = now.getDay(); // 0=Sun
+      const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+      const monday = new Date(now);
+      monday.setDate(monday.getDate() + mondayOffset);
+      monday.setHours(0, 0, 0, 0);
+      const sundayEnd = new Date(monday);
+      sundayEnd.setDate(sundayEnd.getDate() + 7);
+
+      type WeekEvent = {
+        time: string;
+        channelId: number;
+        channelName: string;
+        source: "manual" | "intelligent";
+      };
+      const events: WeekEvent[] = [];
+
+      // 1) Manual slots: enumerate every (day_of_week, time_minutes) for each channel
+      const allSlots = db
+        .prepare(
+          `SELECT cs.channel_id, cs.day_of_week, cs.time_minutes, c.name AS channel_name
+           FROM channel_slots cs
+           JOIN channels c ON c.id = cs.channel_id
+           ORDER BY cs.day_of_week ASC, cs.time_minutes ASC`
+        )
+        .all() as { channel_id: number; day_of_week: number; time_minutes: number; channel_name: string }[];
+
+      for (const slot of allSlots) {
+        // Map day_of_week (0=Sun) to an offset from Monday (0=Mon)
+        const offsetFromMon = slot.day_of_week === 0 ? 6 : slot.day_of_week - 1;
+        const eventDate = new Date(monday);
+        eventDate.setDate(eventDate.getDate() + offsetFromMon);
+        eventDate.setHours(Math.floor(slot.time_minutes / 60), slot.time_minutes % 60, 0, 0);
+        if (eventDate >= monday && eventDate < sundayEnd) {
+          events.push({
+            time: eventDate.toISOString(),
+            channelId: slot.channel_id,
+            channelName: slot.channel_name,
+            source: "manual",
+          });
+        }
+      }
+
+      // 2) Intelligent schedules within this week
+      const intellRows = db
+        .prepare(
+          `SELECT isc.channel_id, isc.next_scrape_time, c.name AS channel_name
+           FROM intelligent_schedule isc
+           JOIN channels c ON c.id = isc.channel_id
+           WHERE isc.next_scrape_time >= ? AND isc.next_scrape_time < ?
+           ORDER BY isc.next_scrape_time ASC`
+        )
+        .all(monday.toISOString(), sundayEnd.toISOString()) as {
+        channel_id: number;
+        next_scrape_time: string;
+        channel_name: string;
+      }[];
+
+      for (const row of intellRows) {
+        events.push({
+          time: row.next_scrape_time,
+          channelId: row.channel_id,
+          channelName: row.channel_name,
+          source: "intelligent",
+        });
+      }
+
+      // Sort by time ascending
+      events.sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+
+      return events;
+    },
+
+    [IpcChannels.CHANNEL_FETCH_UPLOAD_DATES]: async (_event, ...args) => {
+      const channelUrl = (args[0] as string)?.trim();
+      const daysBack = (args[1] as number | undefined) ?? 90;
+      if (!channelUrl) {
+        return { dates: [], error: "Missing channel URL" };
+      }
+      try {
+        const ytDlpPath = ctx.options?.ytDlpPath ?? "yt-dlp";
+        const channelVideosUrl = channelUrl.endsWith("/videos")
+          ? channelUrl
+          : `${channelUrl.replace(/\/$/, "")}/videos`;
+        const dates = await listChannelUploadDates(ytDlpPath, channelVideosUrl, { daysBack });
+        return { dates };
+      } catch (err) {
+        return {
+          dates: [],
+          error: `Failed to fetch upload dates: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
     },
