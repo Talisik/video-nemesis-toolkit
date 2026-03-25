@@ -153,10 +153,11 @@ const PROBE_TIMEOUT_MS = 15_000;
 export async function listChannelUploadDates(
   ytDlpPath: string,
   channelUrl: string,
-  options?: { daysBack?: number; timeoutMs?: number }
+  options?: { daysBack?: number; timeoutMs?: number; maxPerDay?: number }
 ): Promise<string[]> {
   const daysBack = options?.daysBack ?? 90;
-  const timeoutMs = options?.timeoutMs ?? FULL_METADATA_TIMEOUT_MS;
+  const timeoutMs = options?.timeoutMs ?? 0; // 0 = no timeout
+  const maxPerDay = options?.maxPerDay ?? 0; // 0 = unlimited
 
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - daysBack);
@@ -166,9 +167,9 @@ export async function listChannelUploadDates(
   const highFreq = await probeIsHighFrequency(ytDlpPath, channelUrl);
 
   if (highFreq) {
-    return fetchUploadDatesFlat(ytDlpPath, channelUrl, cutoffTs);
+    return fetchUploadDatesFlat(ytDlpPath, channelUrl, cutoffTs, timeoutMs, maxPerDay);
   }
-  return fetchUploadDatesFull(ytDlpPath, channelUrl, dateAfter, cutoffTs, timeoutMs);
+  return fetchUploadDatesFull(ytDlpPath, channelUrl, dateAfter, cutoffTs, timeoutMs, maxPerDay);
 }
 
 /**
@@ -224,7 +225,7 @@ function probeIsHighFrequency(ytDlpPath: string, channelUrl: string): Promise<bo
  */
 function fetchUploadDatesFull(
   ytDlpPath: string, channelUrl: string,
-  dateAfter: string, cutoffTs: number, timeoutMs: number,
+  dateAfter: string, cutoffTs: number, timeoutMs: number, maxPerDay: number = 0,
 ): Promise<string[]> {
   const args = [
     "--no-download",
@@ -242,18 +243,20 @@ function fetchUploadDatesFull(
     let stderr = "";
     proc.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
-    const timer = setTimeout(() => {
-      proc.kill("SIGKILL");
-      reject(new Error(`yt-dlp timed out after ${timeoutMs / 1000}s fetching upload dates.`));
-    }, timeoutMs);
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          proc.kill("SIGKILL");
+          reject(new Error(`yt-dlp timed out after ${timeoutMs / 1000}s fetching upload dates.`));
+        }, timeoutMs)
+      : null;
 
-    proc.on("error", (err) => { clearTimeout(timer); reject(err); });
+    proc.on("error", (err) => { if (timer) clearTimeout(timer); reject(err); });
 
     proc.on("close", (code, signal) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (signal === "SIGKILL") return;
 
-      const dates = parseTimestampLines(stdout, cutoffTs);
+      const dates = parseTimestampLines(stdout, cutoffTs, maxPerDay);
       if (dates.length > 0) { resolve(dates); return; }
       if (code !== 0) { reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`)); return; }
       resolve(dates);
@@ -266,7 +269,7 @@ function fetchUploadDatesFull(
  * Filters by cutoff in JS since --dateafter can't handle NA entries.
  */
 function fetchUploadDatesFlat(
-  ytDlpPath: string, channelUrl: string, cutoffTs: number,
+  ytDlpPath: string, channelUrl: string, cutoffTs: number, timeoutMs: number = 0, maxPerDay: number = 0,
 ): Promise<string[]> {
   const args = [
     "--no-download", "--flat-playlist",
@@ -304,20 +307,22 @@ function fetchUploadDatesFlat(
     // Periodically check if we've passed the cutoff
     const pollInterval = setInterval(checkAndKill, 2000);
 
-    const timer = setTimeout(() => {
-      clearInterval(pollInterval);
-      proc.kill("SIGKILL");
-      reject(new Error("yt-dlp timed out fetching upload dates (flat-playlist)."));
-    }, FULL_METADATA_TIMEOUT_MS);
+    const timer = timeoutMs > 0
+      ? setTimeout(() => {
+          clearInterval(pollInterval);
+          proc.kill("SIGKILL");
+          reject(new Error("yt-dlp timed out fetching upload dates (flat-playlist)."));
+        }, timeoutMs)
+      : null;
 
-    proc.on("error", (err) => { clearTimeout(timer); clearInterval(pollInterval); reject(err); });
+    proc.on("error", (err) => { if (timer) clearTimeout(timer); clearInterval(pollInterval); reject(err); });
 
     proc.on("close", (_code, signal) => {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       clearInterval(pollInterval);
       if (signal === "SIGKILL") return;
 
-      const dates = parseTimestampLines(stdout, cutoffTs);
+      const dates = parseTimestampLines(stdout, cutoffTs, maxPerDay);
       resolve(dates);
     });
   });
@@ -327,9 +332,10 @@ function fetchUploadDatesFlat(
  * Parse yt-dlp output lines ("id\ttimestamp") into formatted date strings.
  * Handles both Unix epoch seconds and YYYYMMDD date-only formats.
  */
-function parseTimestampLines(stdout: string, cutoffTs: number): string[] {
+function parseTimestampLines(stdout: string, cutoffTs: number, maxPerDay: number = 0): string[] {
   const lines = stdout.trim().split("\n").filter(Boolean);
   const dates: string[] = [];
+  const dayCount = new Map<string, number>();
 
   for (const line of lines) {
     const parts = line.split("\t");
@@ -351,10 +357,19 @@ function parseTimestampLines(stdout: string, cutoffTs: number): string[] {
       const yyyy = dt.getUTCFullYear();
       const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
       const dd = String(dt.getUTCDate()).padStart(2, "0");
+      const dayKey = `${yyyy}-${mm}-${dd}`;
+
+      // Enforce per-day cap when maxPerDay > 0
+      if (maxPerDay > 0) {
+        const count = dayCount.get(dayKey) ?? 0;
+        if (count >= maxPerDay) continue;
+        dayCount.set(dayKey, count + 1);
+      }
+
       const hh = String(dt.getUTCHours()).padStart(2, "0");
       const mi = String(dt.getUTCMinutes()).padStart(2, "0");
       const ss = String(dt.getUTCSeconds()).padStart(2, "0");
-      dates.push(`${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`);
+      dates.push(`${dayKey} ${hh}:${mi}:${ss}`);
     }
   }
 

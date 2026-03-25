@@ -583,6 +583,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     [IpcChannels.CHANNEL_FETCH_UPLOAD_DATES]: async (_event, ...args) => {
       const channelUrl = (args[0] as string)?.trim();
       const daysBack = (args[1] as number | undefined) ?? 90;
+      const maxPerDay = (args[2] as number | undefined) ?? 0;
       if (!channelUrl) {
         return { dates: [], error: "Missing channel URL" };
       }
@@ -591,7 +592,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         const channelVideosUrl = channelUrl.endsWith("/videos")
           ? channelUrl
           : `${channelUrl.replace(/\/$/, "")}/videos`;
-        const dates = await listChannelUploadDates(ytDlpPath, channelVideosUrl, { daysBack });
+        const dates = await listChannelUploadDates(ytDlpPath, channelVideosUrl, { daysBack, maxPerDay });
         return { dates };
       } catch (err) {
         return {
