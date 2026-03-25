@@ -138,7 +138,7 @@ export class YouTubeSmartScheduler {
 
     // Schedule next scrape: predict session time based on pattern + add 2 hour buffer
     const lastSessionDate = sessions[sessions.length - 1]!.start;
-    let predictedTime = addHours(lastSessionDate, weightedGap);
+    let predictedTime = addHours(lastSessionDate, Math.round(weightedGap / 24) * 24);
     predictedTime = setHours(predictedTime, commonHour);
     predictedTime = setMinutes(predictedTime, 0);
     predictedTime = setSeconds(predictedTime, 0);
