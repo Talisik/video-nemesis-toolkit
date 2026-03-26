@@ -138,10 +138,7 @@ export class YouTubeSmartScheduler {
 
     // Schedule next scrape: predict session time based on pattern + add 2 hour buffer
     const lastSessionDate = sessions[sessions.length - 1]!.start;
-    let predictedTime = addHours(lastSessionDate, Math.round(weightedGap / 24) * 24);
-    predictedTime = setHours(predictedTime, commonHour);
-    predictedTime = setMinutes(predictedTime, 0);
-    predictedTime = setSeconds(predictedTime, 0);
+    let predictedTime = addHours(lastSessionDate, weightedGap);
 
     let nextScrape = addHours(predictedTime, 2);
 
@@ -206,9 +203,7 @@ export class YouTubeSmartScheduler {
   private formatPattern(hours: number, batch: number, erratic: boolean): string {
     if (erratic) return "Erratic Uploader";
     const batchText = batch > 1 ? `batch of ${batch}` : "1 video";
-    if (hours < 26) return `Daily (${batchText})`;
-    const days = Math.round(hours / 24);
-    return `Every ${days} days (${batchText})`;
+    return `Every ${hours.toFixed(1)} hours (${batchText})`;
   }
 
   /**
