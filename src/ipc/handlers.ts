@@ -28,8 +28,8 @@ export interface HandlerContext {
   getDownloadWorkerRunning: () => boolean;
   setDownloadWorkerRunning: (running: boolean) => void;
   getScraper: () => {
-    start(): void;
-    stop(): void;
+    start(scheduleId?: number): void;
+    stop(scheduleId?: number): void;
     runOnce(channelId?: number): Promise<void>;
   } | null;
 }
@@ -426,14 +426,16 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       return videoDetailsData.getVideoDetailByUrl(db, videoUrl);
     },
 
-    [IpcChannels.SCRAPER_START]: async () => {
+    [IpcChannels.SCRAPER_START]: async (_event, ...args) => {
+      const scheduleId = args[0] as number | undefined;
       const s = getScraper();
-      if (s) s.start();
+      if (s) s.start(scheduleId);
       return undefined;
     },
-    [IpcChannels.SCRAPER_STOP]: async () => {
+    [IpcChannels.SCRAPER_STOP]: async (_event, ...args) => {
+      const scheduleId = args[0] as number | undefined;
       const s = getScraper();
-      if (s) s.stop();
+      if (s) s.stop(scheduleId);
       return undefined;
     },
     [IpcChannels.SCRAPER_RUN_ONCE]: async (_event, ...args) => {

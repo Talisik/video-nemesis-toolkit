@@ -59,6 +59,7 @@ export class YouTubeChannelScraper {
   private timerId: ReturnType<typeof setInterval> | null = null;
   private scheduleTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
+  private pausedScheduleIds = new Set<number>();
   private onRunComplete: (() => void) | undefined;
   private onStatusChange: ((event: ScraperStatusEvent) => void) | undefined;
   private newestOnlyMode: boolean;
@@ -82,7 +83,12 @@ export class YouTubeChannelScraper {
     this.intelligentScheduler = new IntelligentScheduleService();
   }
 
-  start(): void {
+  start(scheduleId?: number): void {
+    if (scheduleId !== undefined) {
+      this.pausedScheduleIds.delete(scheduleId);
+      if (process.env.DEBUG_SCRAPER) console.log("[scraper] resumed schedule", scheduleId);
+      return;
+    }
     if (this.timerId !== null || this.scheduleTimeoutId !== null) return;
     this.stopped = false;
     
@@ -99,7 +105,12 @@ export class YouTubeChannelScraper {
     }
   }
 
-  stop(): void {
+  stop(scheduleId?: number): void {
+    if (scheduleId !== undefined) {
+      this.pausedScheduleIds.add(scheduleId);
+      if (process.env.DEBUG_SCRAPER) console.log("[scraper] paused schedule", scheduleId);
+      return;
+    }
     this.onStatusChange?.({ phase: "idle" });
     this.stopped = true;
     if (this.timerId !== null) {
@@ -210,7 +221,7 @@ export class YouTubeChannelScraper {
       if (process.env.DEBUG_SCRAPER) {
         console.log("[scraper] getChannelsToScrape(channelId):", c ? `found id=${c.id} active=${c.active} last_scraped=${c.last_scraped_at ?? "never"}` : "channel not found");
       }
-      if (!c || !c.active) return Promise.resolve([]);
+      if (!c || !c.active || this.pausedScheduleIds.has(c.schedule_id)) return Promise.resolve([]);
       if (this.wasScrapedRecently(c)) {
         if (process.env.DEBUG_SCRAPER) console.log("[scraper] channel skipped: scraped recently (within", this.channelCheckIntervalMs, "ms)");
         return Promise.resolve([]);
@@ -225,7 +236,7 @@ export class YouTubeChannelScraper {
         console.log("[scraper] found", intelligentDueIds.length, "channels due by intelligent schedule:", intelligentDueIds);
       }
       const channels = scraperDb.getChannelsByIds(db, intelligentDueIds, true);
-      const filtered = channels.filter((c) => !this.wasScrapedRecently(c));
+      const filtered = channels.filter((c) => !this.pausedScheduleIds.has(c.schedule_id) && !this.wasScrapedRecently(c));
       if (filtered.length > 0) {
         return Promise.resolve(filtered);
       }
@@ -254,6 +265,7 @@ export class YouTubeChannelScraper {
     const channels = scraperDb.getChannelsByIds(db, allIds, true);
     const slotDueIds = new Set([...dueNowIds, ...pastDueIds]);
     const filtered = channels.filter((c) => {
+      if (this.pausedScheduleIds.has(c.schedule_id)) return false;
       if (slotDueIds.has(c.id)) return true;
       return !this.wasScrapedRecently(c);
     });
