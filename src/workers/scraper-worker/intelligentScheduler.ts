@@ -152,7 +152,7 @@ export class YouTubeSmartScheduler {
 
     return {
       nextScrapeTime: nextScrape,
-      pattern: this.formatPattern(weightedGap, expectedVolume, confidence < 0.45),
+      pattern: this.formatPattern(weightedGap, expectedVolume, confidence < 0.45, predictedTime),
       confidence: parseFloat(confidence.toFixed(2)),
       expectedVideos: expectedVolume,
       isErratic: confidence < 0.45
@@ -200,9 +200,9 @@ export class YouTubeSmartScheduler {
   /**
    * Format upload pattern into human-readable description.
    */
-  private formatPattern(hours: number, batch: number, erratic: boolean): string {
-    if (erratic) return "Erratic Uploader";
+  private formatPattern(hours: number, batch: number, erratic: boolean, predictedTime: Date): string {
     const batchText = batch > 1 ? `batch of ${batch}` : "1 video";
+    if (erratic) return `Erratic Uploader — ~${hours.toFixed(1)}h avg (${batchText})`;
     return `Every ${hours.toFixed(1)} hours (${batchText})`;
   }
 
