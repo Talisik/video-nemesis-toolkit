@@ -332,9 +332,18 @@ export class YouTubeChannelScraper {
     }
 
     // ===== Identify new videos =====
-    const latestAnalyzedTimestamp = firstScrape 
-      ? null 
-      : channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
+    let latestAnalyzedTimestamp: number | null = null;
+    if (!firstScrape) {
+      latestAnalyzedTimestamp = channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
+      // Fallback: if channel_analysis_videos is empty (e.g. the initial videos were added
+      // directly to download_task before the scraper ran, so addDownloadTaskIfNotExists
+      // returned false and nothing was stored), use last_scraped_at as the cutoff.
+      // This prevents scheduled scrapes from re-queuing old videos that were intentionally
+      // excluded by first_scrape_limit.
+      if (latestAnalyzedTimestamp === null && channel.last_scraped_at) {
+        latestAnalyzedTimestamp = Math.floor(new Date(channel.last_scraped_at).getTime() / 1000);
+      }
+    }
 
     const newVideoIds = new Set<string>();
     let reachedKnownVideo = false;
