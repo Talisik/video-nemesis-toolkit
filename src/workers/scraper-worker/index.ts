@@ -21,6 +21,23 @@ export interface ScraperStatusEvent {
   nextRunAt?: string;
 }
 
+export interface ScrapeChannelError {
+  channelId: number;
+  channelName: string;
+  /** Which phase of the scrape failed: flat-playlist (PASS 1, channel skipped), full-metadata (PASS 2, fell back to date-only), or internal (DB / unexpected). */
+  phase: "flat-playlist" | "full-metadata" | "internal";
+  /** What caused the error: "yt-dlp" for yt-dlp process failures, "internal" for DB / app errors. */
+  source: "yt-dlp" | "internal";
+  message: string;
+}
+
+export interface ScrapeRunResult {
+  /** Number of channels successfully scraped. */
+  scrapedCount: number;
+  /** yt-dlp or internal errors encountered per channel. */
+  errors: ScrapeChannelError[];
+}
+
 export interface YouTubeChannelScraperOptions {
   dbPath: string;
   ytDlpPath?: string;
@@ -186,29 +203,51 @@ export class YouTubeChannelScraper {
    * Run scraper once. If channelId is provided, scrape that channel (subject to recently-checked).
    * Otherwise run in schedule-driven mode: only channels that have a schedule due now, and not run recently.
    */
-  async runOnce(channelId?: number): Promise<void> {
+  async runOnce(channelId?: number): Promise<ScrapeRunResult> {
     this.onStatusChange?.({ phase: "running" });
     const db = this.db ?? openDb(this.dbPath);
-    const channels = await this.getChannelsToScrape(db, channelId);
+    const errors: ScrapeChannelError[] = [];
+    let scrapedCount = 0;
 
-    if (process.env.DEBUG_SCRAPER !== undefined) {
-      console.log("[scraper] runOnce: channels to scrape =", channels.length, channelId !== undefined ? `(channelId=${channelId})` : "(schedule mode)");
-      channels.forEach((c) => console.log("[scraper]   -", c.id, c.name, c.url));
+    try {
+      const channels = await this.getChannelsToScrape(db, channelId);
+
+      if (process.env.DEBUG_SCRAPER !== undefined) {
+        console.log("[scraper] runOnce: channels to scrape =", channels.length, channelId !== undefined ? `(channelId=${channelId})` : "(schedule mode)");
+        channels.forEach((c) => console.log("[scraper]   -", c.id, c.name, c.url));
+      }
+
+      for (const channel of channels) {
+        if (this.stopped) break;
+        const error = await this.scrapeChannel(db, channel);
+        if (error) {
+          errors.push(error);
+        } else {
+          scrapedCount++;
+          scraperDb.updateChannelLastScraped(db, channel.id, new Date().toISOString());
+        }
+      }
+
+      if (channelId === undefined && scrapedCount > 0) {
+        const failedIds = new Set(errors.map((e) => e.channelId));
+        const succeededIds = channels.filter((c) => !failedIds.has(c.id)).map((c) => c.id);
+        if (succeededIds.length > 0) {
+          scraperDb.deleteConsumedRunAts(db, succeededIds, new Date());
+        }
+      }
+
+      this.onRunComplete?.();
+      this.onStatusChange?.({ phase: scrapedCount > 0 ? "finished" : "idle" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[scraper] runOnce unexpected error:", err);
+      errors.push({ channelId: channelId ?? -1, channelName: "unknown", phase: "internal", source: "internal", message });
+      this.onStatusChange?.({ phase: "idle" });
+    } finally {
+      if (this.db === null) db.close();
     }
 
-    for (const channel of channels) {
-      if (this.stopped) break;
-      await this.scrapeChannel(db, channel);
-      scraperDb.updateChannelLastScraped(db, channel.id, new Date().toISOString());
-    }
-
-    if (channelId === undefined && channels.length > 0) {
-      scraperDb.deleteConsumedRunAts(db, channels.map((c) => c.id), new Date());
-    }
-
-    this.onRunComplete?.();
-    if (channels.length > 0) this.onStatusChange?.({ phase: "finished" });
-    if (this.db === null) db.close();
+    return { scrapedCount, errors };
   }
 
   /** Resolve channels to scrape: prioritize intelligent schedule, fallback to slot/interval schedule. */
@@ -297,7 +336,7 @@ export class YouTubeChannelScraper {
       last_scraped_at: string | null;
       first_scrape_limit?: number | null;
     }
-  ): Promise<void> {
+  ): Promise<ScrapeChannelError | null> {
     const channelUrl = channel.url.trim().endsWith("/videos")
       ? channel.url
       : `${channel.url.replace(/\/$/, "")}/videos`;
@@ -327,8 +366,9 @@ export class YouTubeChannelScraper {
         fullMetadata: false, // Fast scan, timestamps are date-only
       });
     } catch (err) {
-      console.error(`[scraper] yt-dlp failed for channel ${channel.id}:`, err);
-      return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[scraper] yt-dlp PASS 1 (flat-playlist) failed for channel ${channel.id}:`, err);
+      return { channelId: channel.id, channelName: channel.name, phase: "flat-playlist" as const, source: "yt-dlp" as const, message };
     }
 
     // ===== Identify new videos =====
@@ -495,5 +535,7 @@ export class YouTubeChannelScraper {
         ")"
       );
     }
+
+    return null;
   }
 }

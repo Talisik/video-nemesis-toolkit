@@ -4,6 +4,8 @@ export type {
   YouTubeChannelScraperOptions,
   ScraperStatusPhase,
   ScraperStatusEvent,
+  ScrapeChannelError,
+  ScrapeRunResult,
 } from "./workers/scraper-worker/index.js";
 export type {
   ChannelRow,

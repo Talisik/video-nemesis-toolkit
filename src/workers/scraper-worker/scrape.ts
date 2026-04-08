@@ -437,7 +437,8 @@ export function listChannelVideos(
 
     const timeout = setTimeout(() => {
       proc.kill("SIGKILL");
-      reject(new Error(`yt-dlp timed out after ${timeoutMs / 1000}s. Channel may be large or slow. Try increasing timeout.`));
+      const detail = stderr.trim() ? `\n${stderr.slice(0, 500)}` : "";
+      reject(new Error(`yt-dlp timed out after ${timeoutMs / 1000}s. Channel may be large or slow.${detail}`));
     }, timeoutMs);
 
     function cleanup() {
@@ -446,7 +447,8 @@ export function listChannelVideos(
 
     proc.on("error", (err) => {
       cleanup();
-      reject(err);
+      const detail = stderr.trim() ? ` — stderr: ${stderr.slice(0, 500)}` : "";
+      reject(new Error(`yt-dlp spawn error: ${err.message}${detail}`));
     });
 
     proc.on("close", (code, signal) => {

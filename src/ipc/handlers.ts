@@ -15,6 +15,7 @@ import { DownloadTaskStatus } from "../types/enum/downloadTaskStatus.js";
 import type { IpcBridgeOptions } from "./types.js";
 import type { ScheduleRow } from "../types/index.js";
 import { IntelligentScheduleService } from "../workers/scraper-worker/intelligentScheduleService.js";
+import type { ScrapeRunResult } from "../workers/scraper-worker/index.js";
 
 function jsonArr(v: string[] | string): string {
   if (typeof v === "string") return v;
@@ -30,7 +31,7 @@ export interface HandlerContext {
   getScraper: () => {
     start(scheduleId?: number): void;
     stop(scheduleId?: number): void;
-    runOnce(channelId?: number): Promise<void>;
+    runOnce(channelId?: number): Promise<ScrapeRunResult>;
   } | null;
 }
 
@@ -441,8 +442,8 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     [IpcChannels.SCRAPER_RUN_ONCE]: async (_event, ...args) => {
       const channelId = args[0] as number | undefined;
       const s = getScraper();
-      if (s) await s.runOnce(channelId);
-      return undefined;
+      if (!s) return { scrapedCount: 0, errors: [{ channelId: channelId ?? -1, channelName: "unknown", phase: "internal", source: "internal", message: "Scraper not initialized" }] } satisfies ScrapeRunResult;
+      return s.runOnce(channelId);
     },
 
     [IpcChannels.DOWNLOAD_WORKER_START]: async () => {
