@@ -229,13 +229,3 @@ export function getNextRunAtIso(db: Database.Database, fromDate: Date): string |
   return d ? d.toISOString() : null;
 }
 
-/**
- * With day+time slots we do not filter videos by upload window; return true (include all).
- */
-export function isUploadInSlotWindow(
-  _slots: { day_of_week: number; time_minutes: number }[],
-  _uploadDayOfWeek: number,
-  _uploadTimeMinutes: number | null
-): boolean {
-  return true;
-}

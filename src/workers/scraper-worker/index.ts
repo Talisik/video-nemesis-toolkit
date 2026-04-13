@@ -449,8 +449,6 @@ export class YouTubeChannelScraper {
         ? channel.max_duration_minutes
         : Number.POSITIVE_INFINITY;
 
-    const slots = this.newestOnlyMode ? [] : scraperDb.getSlotsByChannelId(db, channel.id);
-
     let inRange = 0;
     let newTasks = 0;
     const analysisInputs: Parameters<typeof channelAnalysisVideosData.upsert>[2] = [];
@@ -462,18 +460,16 @@ export class YouTubeChannelScraper {
       if (durationMinutes < minMins) continue;
       if (durationMinutes > maxMins) continue;
 
-      if (slots.length > 0 && v.releaseTimestamp != null) {
-        const uploadDayOfWeek = new Date(v.releaseTimestamp * 1000).getDay();
-        const uploadTimeMinutes = (() => {
-          const d = new Date(v.releaseTimestamp * 1000);
-          return d.getHours() * 60 + d.getMinutes();
-        })();
-        if (!scraperDb.isUploadInSlotWindow(slots, uploadDayOfWeek, uploadTimeMinutes)) continue;
-      }
-
       inRange++;
 
       const videoUrl = `${YOUTUBE_VIDEO_PREFIX}${v.id}`;
+
+      const added = scraperDb.addDownloadTaskIfNotExists(db, {
+        video_url: videoUrl,
+        channel_id: channel.id,
+      });
+
+      if (!added) break; // Reached a video already scraped; all older videos are known
 
       scraperDb.upsertVideoDetail(db, {
         video_url: videoUrl,
@@ -483,25 +479,17 @@ export class YouTubeChannelScraper {
         release_timestamp: v.releaseTimestamp ?? null,
       });
 
-      const added = scraperDb.addDownloadTaskIfNotExists(db, {
-        video_url: videoUrl,
-        channel_id: channel.id,
+      newTasks++;
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      analysisInputs.push({
+        id: v.id,
+        durationSeconds: v.durationSeconds ?? 0,
+        title: v.title ?? "",
+        releaseTimestamp:
+          v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp)
+            ? v.releaseTimestamp
+            : nowSeconds,
       });
-
-      if (added) {
-        newTasks++;
-        // Collect for intelligent schedule analysis
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        analysisInputs.push({
-          id: v.id,
-          durationSeconds: v.durationSeconds ?? 0,
-          title: v.title ?? "",
-          releaseTimestamp:
-            v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp)
-              ? v.releaseTimestamp
-              : nowSeconds,
-        });
-      }
     }
 
     // ===== Save timestamps for intelligent scheduler analysis =====

@@ -93,8 +93,6 @@ export function deleteConsumedRunAts(
   channelSlotsData.deleteConsumedRunAts(db, channelIds, beforeOrAt);
 }
 
-/** Check if upload (day + time) falls within any slot window (for filtering which videos to download). */
-export const isUploadInSlotWindow = channelSlotsData.isUploadInSlotWindow;
 
 /** Latest release_timestamp in video_details for a channel (by name). Null if none. */
 export function getLatestReleaseTimestampForChannel(
