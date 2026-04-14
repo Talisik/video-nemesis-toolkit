@@ -36,6 +36,8 @@ export interface ScrapeRunResult {
   scrapedCount: number;
   /** yt-dlp or internal errors encountered per channel. */
   errors: ScrapeChannelError[];
+  /** Human-readable summary message (e.g. when no new videos were found). */
+  message?: string;
 }
 
 export interface YouTubeChannelScraperOptions {
@@ -208,6 +210,7 @@ export class YouTubeChannelScraper {
     const db = this.db ?? openDb(this.dbPath);
     const errors: ScrapeChannelError[] = [];
     let scrapedCount = 0;
+    let totalNewVideos = 0;
 
     try {
       const channels = await this.getChannelsToScrape(db, channelId);
@@ -219,12 +222,13 @@ export class YouTubeChannelScraper {
 
       for (const channel of channels) {
         if (this.stopped) break;
-        const error = await this.scrapeChannel(db, channel);
-        if (error) {
-          errors.push(error);
-        } else {
+        const result = await this.scrapeChannel(db, channel);
+        if (typeof result === "number") {
           scrapedCount++;
+          totalNewVideos += result;
           scraperDb.updateChannelLastScraped(db, channel.id, new Date().toISOString());
+        } else {
+          errors.push(result);
         }
       }
 
@@ -247,7 +251,11 @@ export class YouTubeChannelScraper {
       if (this.db === null) db.close();
     }
 
-    return { scrapedCount, errors };
+    const result: ScrapeRunResult = { scrapedCount, errors };
+    if (scrapedCount > 0 && totalNewVideos === 0) {
+      result.message = "No new videos found";
+    }
+    return result;
   }
 
   /** Resolve channels to scrape: prioritize intelligent schedule, fallback to slot/interval schedule. */
@@ -336,7 +344,7 @@ export class YouTubeChannelScraper {
       last_scraped_at: string | null;
       first_scrape_limit?: number | null;
     }
-  ): Promise<ScrapeChannelError | null> {
+  ): Promise<ScrapeChannelError | number> {
     const channelUrl = channel.url.trim().endsWith("/videos")
       ? channel.url
       : `${channel.url.replace(/\/$/, "")}/videos`;
@@ -524,6 +532,6 @@ export class YouTubeChannelScraper {
       );
     }
 
-    return null;
+    return newTasks;
   }
 }
