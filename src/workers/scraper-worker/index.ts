@@ -349,7 +349,8 @@ export class YouTubeChannelScraper {
       ? channel.url
       : `${channel.url.replace(/\/$/, "")}/videos`;
 
-    const firstScrape = !channel.last_scraped_at;
+    const latestAnalyzedTimestamp = channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
+    const firstScrape = latestAnalyzedTimestamp === null;
     const maxVideos = this.newestOnlyMode
       ? (firstScrape ? this.newestFirstRunCount : this.newestSubsequentLimit)
       : (firstScrape
@@ -371,6 +372,7 @@ export class YouTubeChannelScraper {
     try {
       quickVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
         ...(maxVideos !== undefined && { maxVideos }),
+        ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
         fullMetadata: false, // Fast scan, timestamps are date-only
       });
     } catch (err) {
@@ -380,19 +382,6 @@ export class YouTubeChannelScraper {
     }
 
     // ===== Identify new videos =====
-    let latestAnalyzedTimestamp: number | null = null;
-    if (!firstScrape) {
-      latestAnalyzedTimestamp = channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
-      // Fallback: if channel_analysis_videos is empty (e.g. the initial videos were added
-      // directly to download_task before the scraper ran, so addDownloadTaskIfNotExists
-      // returned false and nothing was stored), use last_scraped_at as the cutoff.
-      // This prevents scheduled scrapes from re-queuing old videos that were intentionally
-      // excluded by first_scrape_limit.
-      if (latestAnalyzedTimestamp === null && channel.last_scraped_at) {
-        latestAnalyzedTimestamp = Math.floor(new Date(channel.last_scraped_at).getTime() / 1000);
-      }
-    }
-
     const newVideoIds = new Set<string>();
     let reachedKnownVideo = false;
 
@@ -430,6 +419,7 @@ export class YouTubeChannelScraper {
         const fullMetadataVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
           fullMetadata: true, // Get exact upload timestamps
           maxVideos: newVideoIds.size + 5, // Fetch a few extra to ensure we catch all new ones
+          ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
         });
 
         // Filter to only the new videos with accurate timestamps

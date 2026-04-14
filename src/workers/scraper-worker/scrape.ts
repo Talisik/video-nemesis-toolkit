@@ -402,11 +402,12 @@ const FULL_METADATA_TIMEOUT_MS = 300_000; // 5 min when fetching each video's me
 export function listChannelVideos(
   ytDlpPath: string,
   channelUrl: string,
-  options?: { timeoutMs?: number; maxVideos?: number; fullMetadata?: boolean }
+  options?: { timeoutMs?: number; maxVideos?: number; fullMetadata?: boolean; dateAfter?: number }
 ): Promise<ScrapedVideo[]> {
   const fullMetadata = options?.fullMetadata === true;
   const timeoutMs = options?.timeoutMs ?? (fullMetadata ? FULL_METADATA_TIMEOUT_MS : DEFAULT_YT_DLP_TIMEOUT_MS);
   const maxVideos = options?.maxVideos;
+  const dateAfter = options?.dateAfter;
 
   const args = ["--no-download", "--print", PRINT_FORMAT, "--no-warnings", "--quiet", "--ignore-errors"];
   if (fullMetadata) {
@@ -416,6 +417,14 @@ export function listChannelVideos(
   }
   if (maxVideos !== undefined && maxVideos > 0) {
     args.push("--playlist-end", String(maxVideos));
+  }
+  // Stop fetching once yt-dlp reaches a video older than the cutoff date.
+  // --dateafter rejects older entries; --break-on-reject halts iteration
+  // on the first rejection (YouTube lists newest-first).
+  if (dateAfter !== undefined) {
+    const d = new Date(dateAfter * 1000);
+    const yyyymmdd = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
+    args.push("--dateafter", yyyymmdd, "--break-on-reject");
   }
   args.push(channelUrl);
 
@@ -504,6 +513,13 @@ export function listChannelVideos(
         return;
       }
       
+      // --break-on-reject causes a non-zero exit when yt-dlp stops at the
+      // date cutoff. That's expected, not an error — resolve with empty array.
+      if (code !== 0 && dateAfter !== undefined) {
+        resolve(result);
+        return;
+      }
+
       // If no videos were extracted and exit code was non-zero, it's an error
       if (code !== 0) {
         reject(new Error(`yt-dlp exit ${code}: ${stderr.slice(0, 500)}`));
