@@ -351,6 +351,12 @@ export class YouTubeChannelScraper {
 
     const latestAnalyzedTimestamp = channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
     const firstScrape = latestAnalyzedTimestamp === null;
+
+    const cutoffStr = latestAnalyzedTimestamp !== null
+      ? new Date(latestAnalyzedTimestamp * 1000).toISOString()
+      : "no cutoff (first scrape)";
+    console.log(`[scraper] Nemesis is scraping "${channel.name}" for videos uploaded until ${cutoffStr}`);
+
     const maxVideos = this.newestOnlyMode
       ? (firstScrape ? this.newestFirstRunCount : this.newestSubsequentLimit)
       : (firstScrape
