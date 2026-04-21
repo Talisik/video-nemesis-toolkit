@@ -412,37 +412,61 @@ export class YouTubeChannelScraper {
     // ===== PASS 2: Fetch accurate timestamps for NEW videos only =====
     let videosWithAccurateTimestamps: typeof quickVideos = [];
 
+    const CATCHUP_THRESHOLD = 5;
+    const CATCHUP_BATCH_SIZE = 5;
+    const isCatchup = !firstScrape && newVideoIds.size > CATCHUP_THRESHOLD;
+
     if (newVideoIds.size > 0) {
       if (process.env.DEBUG_SCRAPER) {
         console.log(
           "[scraper] PASS 2 (full metadata): fetching accurate timestamps for",
           newVideoIds.size,
-          "new videos..."
+          "new videos...",
+          isCatchup ? `(catch-up mode: batches of ${CATCHUP_BATCH_SIZE})` : "(normal mode)"
         );
       }
 
-      try {
-        const fullMetadataVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
-          fullMetadata: true, // Get exact upload timestamps
-          maxVideos: newVideoIds.size + 5, // Fetch a few extra to ensure we catch all new ones
-          ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
-        });
-
-        // Filter to only the new videos with accurate timestamps
-        videosWithAccurateTimestamps = fullMetadataVideos.filter((v) => newVideoIds.has(v.id));
-
-        if (process.env.DEBUG_SCRAPER) {
-          console.log(
-            `[scraper] retrieved accurate timestamps for ${videosWithAccurateTimestamps.length} new videos`
-          );
+      if (!isCatchup) {
+        // Normal path: first scrape or small number of new videos — fetch all at once
+        try {
+          const fullMetadataVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
+            fullMetadata: true,
+            maxVideos: newVideoIds.size + 5,
+            ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+          });
+          videosWithAccurateTimestamps = fullMetadataVideos.filter((v) => newVideoIds.has(v.id));
+        } catch (err) {
+          console.error(`[scraper] failed to fetch full metadata for channel ${channel.id}:`, err);
+          videosWithAccurateTimestamps = quickVideos.filter((v) => newVideoIds.has(v.id));
         }
-      } catch (err) {
-        console.error(
-          `[scraper] failed to fetch full metadata for channel ${channel.id}:`,
-          err
-        );
-        // Fallback: use the quick videos (with date-only timestamps)
-        videosWithAccurateTimestamps = quickVideos.filter((v) => newVideoIds.has(v.id));
+      } else {
+        // Catch-up path: too many new videos, batch PASS 2 to keep memory flat
+        const newVideoIdArray = [...newVideoIds];
+        for (let i = 0; i < newVideoIdArray.length; i += CATCHUP_BATCH_SIZE) {
+          if (this.stopped) break;
+          const batchIds = new Set(newVideoIdArray.slice(i, i + CATCHUP_BATCH_SIZE));
+          if (process.env.DEBUG_SCRAPER) {
+            console.log(`[scraper] PASS 2 catch-up batch ${Math.floor(i / CATCHUP_BATCH_SIZE) + 1}/${Math.ceil(newVideoIdArray.length / CATCHUP_BATCH_SIZE)}`);
+          }
+          try {
+            const batchVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
+              fullMetadata: true,
+              maxVideos: batchIds.size + 5,
+              ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+            });
+            videosWithAccurateTimestamps.push(...batchVideos.filter((v) => batchIds.has(v.id)));
+          } catch (err) {
+            console.error(`[scraper] PASS 2 catch-up batch failed for channel ${channel.id}:`, err);
+            // Fallback: use PASS 1 date-only timestamps for this batch
+            videosWithAccurateTimestamps.push(...quickVideos.filter((v) => batchIds.has(v.id)));
+          }
+          // Give GC a chance to reclaim the batch's memory before next batch
+          await new Promise<void>((r) => setTimeout(r, 500));
+        }
+      }
+
+      if (process.env.DEBUG_SCRAPER) {
+        console.log(`[scraper] retrieved accurate timestamps for ${videosWithAccurateTimestamps.length} new videos`);
       }
     }
 
