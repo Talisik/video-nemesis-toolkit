@@ -6,6 +6,7 @@ import * as channelAnalysisVideosData from "../../data/channelAnalysisVideos.js"
 
 
 import { listChannelVideos } from "./scrape.js";
+import type { ProcessRegistry } from "./scrape.js";
 import { IntelligentScheduleService } from "./intelligentScheduleService.js";
 
 const DEFAULT_YT_DLP = "yt-dlp";
@@ -85,6 +86,7 @@ export class YouTubeChannelScraper {
   private newestFirstRunCount: number;
   private newestSubsequentLimit: number;
   private intelligentScheduler: IntelligentScheduleService;
+  private activeProcesses: ProcessRegistry = new Set();
 
   constructor(options: YouTubeChannelScraperOptions) {
     this.dbPath = options.dbPath;
@@ -132,6 +134,8 @@ export class YouTubeChannelScraper {
     }
     this.onStatusChange?.({ phase: "idle" });
     this.stopped = true;
+    for (const proc of this.activeProcesses) proc.kill("SIGKILL");
+    this.activeProcesses.clear();
     if (this.timerId !== null) {
       clearInterval(this.timerId);
       this.timerId = null;
@@ -379,7 +383,8 @@ export class YouTubeChannelScraper {
       quickVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
         ...(maxVideos !== undefined && { maxVideos }),
         ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
-        fullMetadata: false, // Fast scan, timestamps are date-only
+        fullMetadata: false,
+        registry: this.activeProcesses,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -433,6 +438,7 @@ export class YouTubeChannelScraper {
             fullMetadata: true,
             maxVideos: newVideoIds.size + 5,
             ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+            registry: this.activeProcesses,
           });
           videosWithAccurateTimestamps = fullMetadataVideos.filter((v) => newVideoIds.has(v.id));
         } catch (err) {
@@ -453,6 +459,7 @@ export class YouTubeChannelScraper {
               fullMetadata: true,
               maxVideos: batchIds.size + 5,
               ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+              registry: this.activeProcesses,
             });
             videosWithAccurateTimestamps.push(...batchVideos.filter((v) => batchIds.has(v.id)));
           } catch (err) {

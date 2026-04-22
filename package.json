@@ -24,6 +24,7 @@
     "worker": "node scripts/run-worker.js",
     "scraper": "node scripts/run-scraper.js",
     "test:ipc": "node scripts/test-ipc.js",
+    "test:kill-on-stop": "node scripts/test-kill-on-stop.js",
     "test:download-queue-push": "node scripts/test-download-queue-push.js",
     "bench": "node scripts/benchmark.js",
     "bench:gc": "node --expose-gc scripts/benchmark.js",

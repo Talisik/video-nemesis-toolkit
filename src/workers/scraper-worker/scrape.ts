@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+
+export type ProcessRegistry = Set<ChildProcess>;
 
 /**
  * yt-dlp --print template. We use %(timestamp)s (Unix seconds).
@@ -25,7 +28,7 @@ export interface ChannelDetails {
 export function fetchChannelDetails(
   ytDlpPath: string,
   channelUrl: string,
-  options?: { timeoutMs?: number; maxVideoCount?: number }
+  options?: { timeoutMs?: number; maxVideoCount?: number; registry?: ProcessRegistry }
 ): Promise<ChannelDetails> {
   const timeoutMs = options?.timeoutMs ?? CHANNEL_DETAILS_TIMEOUT_MS;
   const maxVideoCount = options?.maxVideoCount ?? VIDEO_COUNT_LIMIT;
@@ -47,6 +50,7 @@ export function fetchChannelDetails(
 
   return new Promise((resolve, reject) => {
     const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    options?.registry?.add(proc);
 
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
@@ -65,6 +69,7 @@ export function fetchChannelDetails(
 
     function cleanup() {
       clearTimeout(timeout);
+      options?.registry?.delete(proc);
     }
 
     proc.on("error", (err) => {
@@ -153,7 +158,7 @@ const PROBE_TIMEOUT_MS = 15_000;
 export async function listChannelUploadDates(
   ytDlpPath: string,
   channelUrl: string,
-  options?: { daysBack?: number; timeoutMs?: number; maxPerDay?: number }
+  options?: { daysBack?: number; timeoutMs?: number; maxPerDay?: number; registry?: ProcessRegistry }
 ): Promise<string[]> {
   const daysBack = options?.daysBack ?? 90;
   const timeoutMs = options?.timeoutMs ?? 0; // 0 = no timeout
@@ -164,19 +169,19 @@ export async function listChannelUploadDates(
   const cutoffTs = Math.floor(cutoff.getTime() / 1000);
   const dateAfter = cutoff.toISOString().slice(0, 10).replace(/-/g, "");
 
-  const highFreq = await probeIsHighFrequency(ytDlpPath, channelUrl);
+  const highFreq = await probeIsHighFrequency(ytDlpPath, channelUrl, options?.registry);
 
   if (highFreq) {
-    return fetchUploadDatesFlat(ytDlpPath, channelUrl, cutoffTs, timeoutMs, maxPerDay);
+    return fetchUploadDatesFlat(ytDlpPath, channelUrl, cutoffTs, timeoutMs, maxPerDay, options?.registry);
   }
-  return fetchUploadDatesFull(ytDlpPath, channelUrl, dateAfter, cutoffTs, timeoutMs, maxPerDay);
+  return fetchUploadDatesFull(ytDlpPath, channelUrl, dateAfter, cutoffTs, timeoutMs, maxPerDay, options?.registry);
 }
 
 /**
  * Probe: fetch 10 most recent videos via flat-playlist + approximate_date.
  * Returns true if the channel is high-frequency (span < MIN_PROBE_SPAN_DAYS).
  */
-function probeIsHighFrequency(ytDlpPath: string, channelUrl: string): Promise<boolean> {
+function probeIsHighFrequency(ytDlpPath: string, channelUrl: string, registry?: ProcessRegistry): Promise<boolean> {
   const args = [
     "--no-download", "--flat-playlist",
     "--extractor-args", "youtubetab:approximate_date",
@@ -188,6 +193,7 @@ function probeIsHighFrequency(ytDlpPath: string, channelUrl: string): Promise<bo
 
   return new Promise((resolve) => {
     const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    registry?.add(proc);
 
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -197,10 +203,11 @@ function probeIsHighFrequency(ytDlpPath: string, channelUrl: string): Promise<bo
       resolve(false); // on timeout, assume low-frequency (safer: use full metadata)
     }, PROBE_TIMEOUT_MS);
 
-    proc.on("error", () => { clearTimeout(timer); resolve(false); });
+    proc.on("error", () => { clearTimeout(timer); registry?.delete(proc); resolve(false); });
 
     proc.on("close", (_code, signal) => {
       clearTimeout(timer);
+      registry?.delete(proc);
       if (signal === "SIGKILL") return;
 
       const timestamps = stdout.trim().split("\n")
@@ -226,6 +233,7 @@ function probeIsHighFrequency(ytDlpPath: string, channelUrl: string): Promise<bo
 function fetchUploadDatesFull(
   ytDlpPath: string, channelUrl: string,
   dateAfter: string, cutoffTs: number, timeoutMs: number, maxPerDay: number = 0,
+  registry?: ProcessRegistry,
 ): Promise<string[]> {
   const args = [
     "--no-download",
@@ -237,6 +245,7 @@ function fetchUploadDatesFull(
 
   return new Promise((resolve, reject) => {
     const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    registry?.add(proc);
 
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -250,10 +259,11 @@ function fetchUploadDatesFull(
         }, timeoutMs)
       : null;
 
-    proc.on("error", (err) => { if (timer) clearTimeout(timer); reject(err); });
+    proc.on("error", (err) => { if (timer) clearTimeout(timer); registry?.delete(proc); reject(err); });
 
     proc.on("close", (code, signal) => {
       if (timer) clearTimeout(timer);
+      registry?.delete(proc);
       if (signal === "SIGKILL") return;
 
       const dates = parseTimestampLines(stdout, cutoffTs, maxPerDay);
@@ -270,6 +280,7 @@ function fetchUploadDatesFull(
  */
 function fetchUploadDatesFlat(
   ytDlpPath: string, channelUrl: string, cutoffTs: number, timeoutMs: number = 0, maxPerDay: number = 0,
+  registry?: ProcessRegistry,
 ): Promise<string[]> {
   const args = [
     "--no-download", "--flat-playlist",
@@ -281,6 +292,7 @@ function fetchUploadDatesFlat(
 
   return new Promise((resolve, reject) => {
     const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    registry?.add(proc);
 
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
@@ -315,11 +327,12 @@ function fetchUploadDatesFlat(
         }, timeoutMs)
       : null;
 
-    proc.on("error", (err) => { if (timer) clearTimeout(timer); clearInterval(pollInterval); reject(err); });
+    proc.on("error", (err) => { if (timer) clearTimeout(timer); clearInterval(pollInterval); registry?.delete(proc); reject(err); });
 
     proc.on("close", (_code, signal) => {
       if (timer) clearTimeout(timer);
       clearInterval(pollInterval);
+      registry?.delete(proc);
       if (signal === "SIGKILL") return;
 
       const dates = parseTimestampLines(stdout, cutoffTs, maxPerDay);
@@ -402,7 +415,7 @@ const FULL_METADATA_TIMEOUT_MS = 300_000; // 5 min when fetching each video's me
 export function listChannelVideos(
   ytDlpPath: string,
   channelUrl: string,
-  options?: { timeoutMs?: number; maxVideos?: number; fullMetadata?: boolean; dateAfter?: number }
+  options?: { timeoutMs?: number; maxVideos?: number; fullMetadata?: boolean; dateAfter?: number; registry?: ProcessRegistry }
 ): Promise<ScrapedVideo[]> {
   const fullMetadata = options?.fullMetadata === true;
   const timeoutMs = options?.timeoutMs ?? (fullMetadata ? FULL_METADATA_TIMEOUT_MS : DEFAULT_YT_DLP_TIMEOUT_MS);
@@ -430,6 +443,7 @@ export function listChannelVideos(
 
   return new Promise((resolve, reject) => {
     const proc = spawn(ytDlpPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+    options?.registry?.add(proc);
 
     let stdout = "";
     proc.stdout?.on("data", (chunk: Buffer) => {
@@ -452,6 +466,7 @@ export function listChannelVideos(
 
     function cleanup() {
       clearTimeout(timeout);
+      options?.registry?.delete(proc);
     }
 
     proc.on("error", (err) => {

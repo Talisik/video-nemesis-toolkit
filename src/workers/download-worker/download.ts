@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+
+export type ProcessRegistry = Set<ChildProcess>;
 
 export interface DownloadOptions {
   id: string;
@@ -8,6 +11,7 @@ export interface DownloadOptions {
   outputDir: string;
   ytDlpPath: string;
   maxHeight?: number;
+  registry?: ProcessRegistry;
 }
 
 /**
@@ -24,6 +28,7 @@ export async function downloadVideo(
     outputDir,
     ytDlpPath,
     maxHeight = 720,
+    registry,
   } = options;
 
   await mkdir(outputDir, { recursive: true });
@@ -46,6 +51,7 @@ export async function downloadVideo(
       ],
       { stdio: ["ignore", "pipe", "pipe"] }
     );
+    registry?.add(proc);
 
     let stderr = "";
     proc.stderr?.on("data", (chunk: Buffer) => {
@@ -53,11 +59,13 @@ export async function downloadVideo(
     });
 
     proc.on("error", (err) => {
+      registry?.delete(proc);
       console.error(`[download] spawn error for ${id}:`, err);
       resolve(false);
     });
 
     proc.on("close", (code) => {
+      registry?.delete(proc);
       if (code !== 0) {
         console.error(
           `[download] yt-dlp exit ${code} for ${id}:`,

@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import * as channelsData from "../../data/channels.js";
 import * as downloadWorkerDb from "./db.js";
 import { downloadVideo } from "./download.js";
+import type { ProcessRegistry } from "./download.js";
 import type { DownloadWorkerOptions } from "../../types/index.js";
 import { DownloadTaskStatus } from "../../types/enum/downloadTaskStatus.js";
 import { slugify } from "../../utils/slug.js";
@@ -60,6 +61,7 @@ export class DownloadWorker {
   private db: Database.Database | null = null;
   private timerId: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
+  private activeProcesses: ProcessRegistry = new Set();
 
   constructor(options: DownloadWorkerOptions) {
     this.dbPath = options.dbPath;
@@ -84,6 +86,8 @@ export class DownloadWorker {
    */
   stop(): void {
     this.stopped = true;
+    for (const proc of this.activeProcesses) proc.kill("SIGKILL");
+    this.activeProcesses.clear();
     if (this.timerId !== null) {
       clearInterval(this.timerId);
       this.timerId = null;
@@ -141,6 +145,7 @@ export class DownloadWorker {
       outputDir: taskOutputDir,
       ytDlpPath: this.ytDlpPath,
       maxHeight: this.maxHeight,
+      registry: this.activeProcesses,
     });
 
     if (this.stopped || this.db === null) return;
