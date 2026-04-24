@@ -5,5 +5,7 @@ import Database from "better-sqlite3";
  * Shared: use for any code that needs a connection (scheduler, workers, app).
  */
 export function openDb(dbPath: string): Database.Database {
-  return new Database(dbPath, { readonly: false });
+  const db = new Database(dbPath, { readonly: false });
+  db.pragma('foreign_keys = ON');
+  return db;
 }

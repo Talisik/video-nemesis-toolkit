@@ -116,6 +116,8 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     [IpcChannels.CHANNELS_DELETE]: async (_event, ...args) => {
       const id = args[0] as number;
       channelsData.deleteChannel(db, id);
+      db.prepare(`DELETE FROM download_history WHERE channel_id = ?`).run(id);
+      db.prepare(`DELETE FROM download_task WHERE channel_id = ? AND status = 'pending'`).run(id);
       return undefined;
     },
     [IpcChannels.CHANNELS_SET_ACTIVE]: async (_event, ...args) => {

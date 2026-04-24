@@ -92,6 +92,12 @@ export function runMigrations(db: Database.Database): void {
     updated_at TEXT NOT NULL,
     FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
   )`);
+
+  db.exec(`DELETE FROM channel_slots WHERE channel_id NOT IN (SELECT id FROM channels)`);
+  db.exec(`DELETE FROM channel_analysis_videos WHERE channel_id NOT IN (SELECT id FROM channels)`);
+  db.exec(`DELETE FROM intelligent_schedule WHERE channel_id NOT IN (SELECT id FROM channels)`);
+  db.exec(`DELETE FROM download_task WHERE status = 'pending' AND channel_id NOT IN (SELECT id FROM channels)`);
+  db.exec(`DELETE FROM download_history WHERE channel_id NOT IN (SELECT id FROM channels)`);
 }
 
 /**
