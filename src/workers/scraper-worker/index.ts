@@ -87,6 +87,7 @@ export class YouTubeChannelScraper {
   private newestSubsequentLimit: number;
   private intelligentScheduler: IntelligentScheduleService;
   private activeProcesses: ProcessRegistry = new Set();
+  private abortController: AbortController | null = null;
 
   constructor(options: YouTubeChannelScraperOptions) {
     this.dbPath = options.dbPath;
@@ -134,6 +135,8 @@ export class YouTubeChannelScraper {
     }
     this.onStatusChange?.({ phase: "idle" });
     this.stopped = true;
+    this.abortController?.abort();
+    this.abortController = null;
     for (const proc of this.activeProcesses) proc.kill("SIGKILL");
     this.activeProcesses.clear();
     if (this.timerId !== null) {
@@ -210,6 +213,8 @@ export class YouTubeChannelScraper {
    * Otherwise run in schedule-driven mode: only channels that have a schedule due now, and not run recently.
    */
   async runOnce(channelId?: number): Promise<ScrapeRunResult> {
+    const ac = new AbortController();
+    this.abortController = ac;
     this.onStatusChange?.({ phase: "running" });
     const db = this.db ?? openDb(this.dbPath);
     const errors: ScrapeChannelError[] = [];
@@ -226,7 +231,7 @@ export class YouTubeChannelScraper {
 
       for (const channel of channels) {
         if (this.stopped) break;
-        const result = await this.scrapeChannel(db, channel);
+        const result = await this.scrapeChannel(db, channel, ac.signal);
         if (typeof result === "number") {
           scrapedCount++;
           totalNewVideos += result;
@@ -252,6 +257,7 @@ export class YouTubeChannelScraper {
       errors.push({ channelId: channelId ?? -1, channelName: "unknown", phase: "internal", source: "internal", message });
       this.onStatusChange?.({ phase: "idle" });
     } finally {
+      if (this.abortController === ac) this.abortController = null;
       if (this.db === null) db.close();
     }
 
@@ -347,7 +353,8 @@ export class YouTubeChannelScraper {
       max_duration_minutes: number | null;
       last_scraped_at: string | null;
       first_scrape_limit?: number | null;
-    }
+    },
+    signal?: AbortSignal,
   ): Promise<ScrapeChannelError | number> {
     const channelUrl = channel.url.trim().endsWith("/videos")
       ? channel.url
@@ -383,6 +390,7 @@ export class YouTubeChannelScraper {
       quickVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
         ...(maxVideos !== undefined && { maxVideos }),
         ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+        ...(signal !== undefined && { signal }),
         fullMetadata: false,
         registry: this.activeProcesses,
       });
