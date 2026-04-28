@@ -188,7 +188,7 @@ export class YouTubeChannelScraper {
           return;
         }
         if (nextMs <= 0) {
-          setImmediate(this.runScheduleLoop);
+          setImmediate(() => { if (!this.stopped) this.runScheduleLoop(); });
           return;
         }
         const nextRunAt = new Date(Date.now() + nextMs).toISOString();
