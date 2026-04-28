@@ -313,6 +313,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         return {
           intelligentPrediction,
           suggestedSlots,
+          videos: quickVideos,
           videoCount: quickVideos.length,
           message: timestamps.length < 3 ? "Not enough videos to generate schedule" : "Schedule analysis complete",
         };
