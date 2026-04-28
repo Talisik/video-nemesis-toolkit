@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { openDb } from "../../db.js";
 import type Database from "better-sqlite3";
 import type { ChannelRow } from "../../types/index.js";
@@ -137,7 +138,17 @@ export class YouTubeChannelScraper {
     this.stopped = true;
     this.abortController?.abort();
     this.abortController = null;
-    for (const proc of this.activeProcesses) proc.kill("SIGKILL");
+    for (const proc of this.activeProcesses) {
+      if (process.platform === "win32" && proc.pid !== undefined) {
+        try {
+          spawn("taskkill", ["/F", "/T", "/PID", String(proc.pid)], { stdio: "ignore", detached: true }).unref();
+        } catch {
+          proc.kill();
+        }
+      } else {
+        proc.kill("SIGKILL");
+      }
+    }
     this.activeProcesses.clear();
     if (this.timerId !== null) {
       clearInterval(this.timerId);
