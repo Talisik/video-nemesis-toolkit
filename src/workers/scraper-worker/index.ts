@@ -224,6 +224,10 @@ export class YouTubeChannelScraper {
    * Otherwise run in schedule-driven mode: only channels that have a schedule due now, and not run recently.
    */
   async runOnce(channelId?: number): Promise<ScrapeRunResult> {
+    // When targeting a specific channel, clear the stopped flag so an on-demand
+    // scrape works even if the schedule loop previously stopped itself (e.g. no
+    // channels existed at app start).
+    if (channelId !== undefined) this.stopped = false;
     const ac = new AbortController();
     this.abortController = ac;
     this.onStatusChange?.({ phase: "running" });
