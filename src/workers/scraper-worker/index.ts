@@ -194,8 +194,8 @@ export class YouTubeChannelScraper {
         db.close();
         
         if (nextMs === null) {
-          if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules (intelligent or slot-based); stopping schedule loop");
-          this.stop();
+          if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules (intelligent or slot-based); schedule loop idle (not stopping so on-demand runOnce still works)");
+          this.onStatusChange?.({ phase: "idle" });
           return;
         }
         if (nextMs <= 0) {
