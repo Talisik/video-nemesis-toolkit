@@ -40,6 +40,8 @@ export interface ScrapeRunResult {
   errors: ScrapeChannelError[];
   /** Human-readable summary message (e.g. when no new videos were found). */
   message?: string;
+  /** True when more due channels were skipped this run due to maxChannelsPerRun cap. */
+  hasMore?: boolean;
 }
 
 export interface YouTubeChannelScraperOptions {
@@ -64,6 +66,8 @@ export interface YouTubeChannelScraperOptions {
   newestFirstRunCount?: number;
   /** With newestOnlyMode: how many to fetch on subsequent scrapes (only new ones get queued). Default 20. */
   newestSubsequentLimit?: number;
+  /** Max channels to scrape per runOnce() in schedule mode. Remaining due channels are picked up on the next loop iteration. Default 3. */
+  maxChannelsPerRun?: number;
 }
 
 /**
@@ -86,6 +90,7 @@ export class YouTubeChannelScraper {
   private newestOnlyMode: boolean;
   private newestFirstRunCount: number;
   private newestSubsequentLimit: number;
+  private maxChannelsPerRun: number;
   private intelligentScheduler: IntelligentScheduleService;
   private activeProcesses: ProcessRegistry = new Set();
   private abortController: AbortController | null = null;
@@ -103,6 +108,7 @@ export class YouTubeChannelScraper {
     this.newestOnlyMode = options.newestOnlyMode ?? false;
     this.newestFirstRunCount = options.newestFirstRunCount ?? 15;
     this.newestSubsequentLimit = options.newestSubsequentLimit ?? 50;
+    this.maxChannelsPerRun = options.maxChannelsPerRun ?? 3;
     this.intelligentScheduler = new IntelligentScheduleService();
   }
 
@@ -171,8 +177,15 @@ export class YouTubeChannelScraper {
   private runScheduleLoop = (): void => {
     if (this.stopped) return;
     this.runOnce()
-      .then(() => {
+      .then((runResult) => {
         if (this.stopped) return;
+
+        // More due channels were capped this run — drain them before sleeping
+        if (runResult.hasMore) {
+          setImmediate(() => { if (!this.stopped) this.runScheduleLoop(); });
+          return;
+        }
+
         const db = openDb(this.dbPath);
         
         // Get next wake time from intelligent schedule
@@ -235,12 +248,15 @@ export class YouTubeChannelScraper {
     const errors: ScrapeChannelError[] = [];
     let scrapedCount = 0;
     let totalNewVideos = 0;
+    let hasMore = false;
 
     try {
-      const channels = await this.getChannelsToScrape(db, channelId);
+      const result = await this.getChannelsToScrape(db, channelId);
+      const { channels } = result;
+      hasMore = result.hasMore;
 
       if (process.env.DEBUG_SCRAPER !== undefined) {
-        console.log("[scraper] runOnce: channels to scrape =", channels.length, channelId !== undefined ? `(channelId=${channelId})` : "(schedule mode)");
+        console.log("[scraper] runOnce: channels to scrape =", channels.length, channelId !== undefined ? `(channelId=${channelId})` : "(schedule mode)", hasMore ? "(more pending)" : "");
         channels.forEach((c) => console.log("[scraper]   -", c.id, c.name, c.url));
       }
 
@@ -280,6 +296,7 @@ export class YouTubeChannelScraper {
     if (scrapedCount > 0 && totalNewVideos === 0) {
       result.message = "No new videos found";
     }
+    if (hasMore) result.hasMore = true;
     return result;
   }
 
@@ -287,18 +304,23 @@ export class YouTubeChannelScraper {
   private getChannelsToScrape(
     db: Database.Database,
     channelId?: number
-  ): Promise<ChannelRow[]> {
+  ): Promise<{ channels: ChannelRow[]; hasMore: boolean }> {
+    const cap = (list: ChannelRow[]): { channels: ChannelRow[]; hasMore: boolean } => ({
+      channels: channelId !== undefined ? list : list.slice(0, this.maxChannelsPerRun),
+      hasMore: channelId === undefined && list.length > this.maxChannelsPerRun,
+    });
+
     if (channelId !== undefined) {
       const c = scraperDb.getChannelById(db, channelId);
       if (process.env.DEBUG_SCRAPER) {
         console.log("[scraper] getChannelsToScrape(channelId):", c ? `found id=${c.id} active=${c.active} last_scraped=${c.last_scraped_at ?? "never"}` : "channel not found");
       }
-      if (!c || !c.active || this.pausedScheduleIds.has(c.schedule_id)) return Promise.resolve([]);
+      if (!c || !c.active || this.pausedScheduleIds.has(c.schedule_id)) return Promise.resolve(cap([]));
       if (this.wasScrapedRecently(c)) {
         if (process.env.DEBUG_SCRAPER) console.log("[scraper] channel skipped: scraped recently (within", this.channelCheckIntervalMs, "ms)");
-        return Promise.resolve([]);
+        return Promise.resolve(cap([]));
       }
-      return Promise.resolve([c]);
+      return Promise.resolve(cap([c]));
     }
 
     // First try intelligent schedule for channels with analysis data
@@ -308,16 +330,16 @@ export class YouTubeChannelScraper {
         console.log("[scraper] found", intelligentDueIds.length, "channels due by intelligent schedule:", intelligentDueIds);
       }
       const channels = scraperDb.getChannelsByIds(db, intelligentDueIds, true);
-      const filtered = channels.filter((c) => !this.pausedScheduleIds.has(c.schedule_id) && !this.wasScrapedRecently(c));
+      const filtered = channels.filter((c: ChannelRow) => !this.pausedScheduleIds.has(c.schedule_id) && !this.wasScrapedRecently(c));
       if (filtered.length > 0) {
-        return Promise.resolve(filtered);
+        return Promise.resolve(cap(filtered));
       }
     }
 
     // Fallback to traditional slot/interval schedule
     if (!scraperDb.hasAnySchedules(db)) {
       if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules in DB; no channels to scrape (schedule mode)");
-      return Promise.resolve([]);
+      return Promise.resolve(cap([]));
     }
     const now = new Date();
     const day = now.getDay();
@@ -333,10 +355,10 @@ export class YouTubeChannelScraper {
     if (process.env.DEBUG_SCRAPER) {
       console.log("[scraper] slot-based schedule check: day=", day, "timeMinutes=", currentTimeMinutes, "dueNowIds=", dueNowIds, "pastDueIds=", pastDueIds, "allIds=", allIds);
     }
-    if (allIds.length === 0) return Promise.resolve([]);
+    if (allIds.length === 0) return Promise.resolve(cap([]));
     const channels = scraperDb.getChannelsByIds(db, allIds, true);
     const slotDueIds = new Set([...dueNowIds, ...pastDueIds]);
-    const filtered = channels.filter((c) => {
+    const filtered = channels.filter((c: ChannelRow) => {
       if (this.pausedScheduleIds.has(c.schedule_id)) return false;
       if (slotDueIds.has(c.id)) return true;
       return !this.wasScrapedRecently(c);
@@ -344,7 +366,7 @@ export class YouTubeChannelScraper {
     if (process.env.DEBUG_SCRAPER && filtered.length < channels.length) {
       console.log("[scraper] filtered out", channels.length - filtered.length, "channels (scraped recently)");
     }
-    return Promise.resolve(filtered);
+    return Promise.resolve(cap(filtered));
   }
 
   private wasScrapedRecently(channel: Pick<ChannelRow, "last_scraped_at">): boolean {
