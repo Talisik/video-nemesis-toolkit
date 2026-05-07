@@ -50,9 +50,11 @@ export function registerIpcHandlers(
       newestSubsequentLimit: options.scraperNewestSubsequentLimit ?? 50,
     }),
     ...(options.sendToRenderer != null && {
-      onRunComplete: () => {
+      onRunComplete: (channelId?: number) => {
         setImmediate(() => {
-          const tasks = downloadTasksData.listDownloadTasks(db, "pending");
+          const tasks = channelId !== undefined
+            ? downloadTasksData.listDownloadTasks(db, { status: "pending", channelId })
+            : downloadTasksData.listDownloadTasks(db, "pending");
           options.sendToRenderer!(channel, tasks);
         });
       },

@@ -85,6 +85,23 @@ export function getLatestTimestampForChannel(
 }
 
 /**
+ * Returns the most recent video_ids we have stored for a channel.
+ * Used as an ID-based cutoff so scrapes can stop even when timestamps are date-only.
+ */
+export function getRecentVideoIdsForChannel(
+  db: Database.Database,
+  channelId: number,
+  limit: number = 50,
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT video_id FROM ${TABLE} WHERE channel_id = ? ORDER BY release_timestamp DESC, id DESC LIMIT ?`,
+    )
+    .all(channelId, limit) as { video_id: string }[];
+  return rows.map((r) => r.video_id);
+}
+
+/**
  * Keep only the most recent MAX_VIDEOS_PER_CHANNEL rows per channel (by release_timestamp).
  * Deletes older rows so the table doesn't grow unbounded.
  */

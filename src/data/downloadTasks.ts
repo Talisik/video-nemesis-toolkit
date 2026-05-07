@@ -7,22 +7,47 @@ import {
 
 const TABLE = "download_task";
 
+/**
+ * List download tasks.
+ *
+ * - Backwards-compatible usage: listDownloadTasks(db, "pending")
+ * - Extended usage: listDownloadTasks(db, { status: "pending", channelId: 7 })
+ */
 export function listDownloadTasks(
   db: Database.Database,
-  status?: string
+  statusOrOptions?: string | { status?: string; channelId?: number }
 ): DownloadTaskRow[] {
-  if (status) {
-    return db
-      .prepare(
-        `SELECT id, video_url, channel_id, status, retry_count, created_at, updated_at FROM ${TABLE} WHERE status = ? ORDER BY created_at ASC`
-      )
-      .all(status) as DownloadTaskRow[];
+  let status: string | undefined;
+  let channelId: number | undefined;
+
+  if (typeof statusOrOptions === "string" || statusOrOptions === undefined) {
+    status = statusOrOptions;
+  } else {
+    status = statusOrOptions.status;
+    channelId = statusOrOptions.channelId;
   }
+
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (status) {
+    where.push("status = ?");
+    params.push(status);
+  }
+
+  if (channelId !== undefined) {
+    where.push("channel_id = ?");
+    params.push(channelId);
+  }
+
+  const whereClause =
+    where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+
   return db
     .prepare(
-      `SELECT id, video_url, channel_id, status, retry_count, created_at, updated_at FROM ${TABLE} ORDER BY created_at ASC`
+      `SELECT id, video_url, channel_id, status, retry_count, created_at, updated_at FROM ${TABLE} ${whereClause} ORDER BY created_at ASC`
     )
-    .all() as DownloadTaskRow[];
+    .all(...params) as DownloadTaskRow[];
 }
 
 export function addDownloadTask(

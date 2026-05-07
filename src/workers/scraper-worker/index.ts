@@ -51,8 +51,12 @@ export interface YouTubeChannelScraperOptions {
   channelCheckIntervalMs?: number;
   /** Minutes after schedule.time during which a channel is considered "due". Default 15. */
   scheduleWindowMinutes?: number;
-  /** Called after each runOnce() (schedule loop or tick). Use to e.g. push download queue to renderer. */
-  onRunComplete?: () => void;
+  /**
+   * Called after each runOnce() (schedule loop or tick). Use to e.g. push download queue to renderer.
+   * When channelId is provided, the run was explicitly targeted at that channel; when undefined, the
+   * run was schedule-driven/global.
+   */
+  onRunComplete?: (channelId?: number) => void;
   /** Called when scraper phase changes: running, finished, sleeping (with nextRunAt), idle. */
   onStatusChange?: (event: ScraperStatusEvent) => void;
   /**
@@ -81,7 +85,7 @@ export class YouTubeChannelScraper {
   private scheduleTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private pausedScheduleIds = new Set<number>();
-  private onRunComplete: (() => void) | undefined;
+  private onRunComplete: ((channelId?: number) => void) | undefined;
   private onStatusChange: ((event: ScraperStatusEvent) => void) | undefined;
   private newestOnlyMode: boolean;
   private newestFirstRunCount: number;
@@ -89,6 +93,7 @@ export class YouTubeChannelScraper {
   private intelligentScheduler: IntelligentScheduleService;
   private activeProcesses: ProcessRegistry = new Set();
   private abortController: AbortController | null = null;
+  private isRunning = false;
 
   constructor(options: YouTubeChannelScraperOptions) {
     this.dbPath = options.dbPath;
@@ -224,6 +229,16 @@ export class YouTubeChannelScraper {
    * Otherwise run in schedule-driven mode: only channels that have a schedule due now, and not run recently.
    */
   async runOnce(channelId?: number): Promise<ScrapeRunResult> {
+    if (this.isRunning) {
+      if (process.env.DEBUG_SCRAPER) {
+        console.log(
+          "[scraper] runOnce skipped: a previous run is still in progress",
+        );
+      }
+      return { scrapedCount: 0, errors: [], message: "Already running" };
+    }
+    this.isRunning = true;
+
     // When targeting a specific channel, clear the stopped flag so an on-demand
     // scrape works even if the schedule loop previously stopped itself (e.g. no
     // channels existed at app start).
@@ -264,7 +279,7 @@ export class YouTubeChannelScraper {
         }
       }
 
-      this.onRunComplete?.();
+      this.onRunComplete?.(channelId);
       this.onStatusChange?.({ phase: scrapedCount > 0 ? "finished" : "idle" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -274,6 +289,7 @@ export class YouTubeChannelScraper {
     } finally {
       if (this.abortController === ac) this.abortController = null;
       if (this.db === null) db.close();
+      this.isRunning = false;
     }
 
     const result: ScrapeRunResult = { scrapedCount, errors };
@@ -294,10 +310,8 @@ export class YouTubeChannelScraper {
         console.log("[scraper] getChannelsToScrape(channelId):", c ? `found id=${c.id} active=${c.active} last_scraped=${c.last_scraped_at ?? "never"}` : "channel not found");
       }
       if (!c || !c.active || this.pausedScheduleIds.has(c.schedule_id)) return Promise.resolve([]);
-      if (this.wasScrapedRecently(c)) {
-        if (process.env.DEBUG_SCRAPER) console.log("[scraper] channel skipped: scraped recently (within", this.channelCheckIntervalMs, "ms)");
-        return Promise.resolve([]);
-      }
+      // Manual/on-demand scrape (channelId provided) should always run now.
+      // The "recently scraped" cooldown only applies to schedule-driven runs.
       return Promise.resolve([c]);
     }
 
@@ -400,35 +414,137 @@ export class YouTubeChannelScraper {
       );
     }
 
-    let quickVideos;
-    try {
-      quickVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
-        ...(maxVideos !== undefined && { maxVideos }),
+    const recentKnownIds = latestAnalyzedTimestamp !== null
+      ? new Set(channelAnalysisVideosData.getRecentVideoIdsForChannel(db, channel.id, 50))
+      : new Set<string>();
+
+    const runQuickScan = async (limit?: number) => {
+      return await listChannelVideos(this.ytDlpPath, channelUrl, {
+        ...(limit !== undefined && { maxVideos: limit }),
+        ...(maxVideos !== undefined && limit === undefined && { maxVideos }),
         ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
         ...(signal !== undefined && { signal }),
         fullMetadata: false,
         registry: this.activeProcesses,
       });
+    };
+
+    let quickVideos;
+    try {
+      // Optimization: on subsequent scrapes, start with a smaller scan window.
+      // If we don't see a known video ID inside that window, retry with a bigger cap.
+      const SMALL_SCAN_LIMIT = firstScrape ? undefined : 60;
+      quickVideos = await runQuickScan(SMALL_SCAN_LIMIT);
+      const sawKnownId =
+        recentKnownIds.size > 0 && quickVideos.some((v) => recentKnownIds.has(v.id));
+      const likelyTruncated = SMALL_SCAN_LIMIT !== undefined && quickVideos.length >= SMALL_SCAN_LIMIT;
+      if (!firstScrape && !sawKnownId && likelyTruncated) {
+        if (process.env.DEBUG_SCRAPER) {
+          console.log(
+            `[scraper] PASS 1 small scan didn't reach known IDs; retrying with a larger cap`,
+          );
+        }
+        quickVideos = await runQuickScan(200);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[scraper] yt-dlp PASS 1 (flat-playlist) failed for channel ${channel.id}:`, err);
-      return { channelId: channel.id, channelName: channel.name, phase: "flat-playlist" as const, source: "yt-dlp" as const, message };
+      console.error(
+        `[scraper] yt-dlp PASS 1 (flat-playlist) failed for channel ${channel.id}:`,
+        err,
+      );
+      return {
+        channelId: channel.id,
+        channelName: channel.name,
+        phase: "flat-playlist" as const,
+        source: "yt-dlp" as const,
+        message,
+      };
     }
 
     // ===== Identify new videos =====
+    const hasCutoff = latestAnalyzedTimestamp != null;
+    const validQuickTimestamps = quickVideos.filter(
+      (v) => v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp),
+    );
+    const dateOnlyQuickCount = validQuickTimestamps.filter((v) => {
+      const d = new Date((v.releaseTimestamp as number) * 1000);
+      return (
+        d.getUTCHours() === 0 &&
+        d.getUTCMinutes() === 0 &&
+        d.getUTCSeconds() === 0
+      );
+    }).length;
+    const quickScanLikelyDateOnly =
+      hasCutoff &&
+      validQuickTimestamps.length > 0 &&
+      dateOnlyQuickCount / validQuickTimestamps.length >= 0.6;
+
     const newVideoIds = new Set<string>();
     let reachedKnownVideo = false;
 
     for (const video of quickVideos) {
       if (reachedKnownVideo) break; // Stop once we hit a video we've seen
+
+      // ID-based cutoff: if we see a video ID we've already stored, we can stop immediately
+      // even if timestamps are date-only/unreliable.
+      if (recentKnownIds.size > 0 && recentKnownIds.has(video.id)) {
+        reachedKnownVideo = true;
+        break;
+      }
       
-      if (latestAnalyzedTimestamp != null && video.releaseTimestamp != null) {
+      if (
+        latestAnalyzedTimestamp != null &&
+        video.releaseTimestamp != null &&
+        !quickScanLikelyDateOnly
+      ) {
         if (video.releaseTimestamp <= latestAnalyzedTimestamp) {
           reachedKnownVideo = true;
           break; // This and all older videos are already known
         }
       }
       newVideoIds.add(video.id);
+    }
+
+    let fallbackFullMetadataVideos: typeof quickVideos | null = null;
+    if (
+      !firstScrape &&
+      newVideoIds.size === 0 &&
+      quickScanLikelyDateOnly &&
+      latestAnalyzedTimestamp != null
+    ) {
+      const SAME_DAY_PROBE_LIMIT = 15;
+      if (process.env.DEBUG_SCRAPER) {
+        console.log(
+          `[scraper] quick scan appears date-only; probing latest ${SAME_DAY_PROBE_LIMIT} videos with full metadata`,
+        );
+      }
+      try {
+        fallbackFullMetadataVideos = await listChannelVideos(
+          this.ytDlpPath,
+          channelUrl,
+          {
+            fullMetadata: true,
+            maxVideos: SAME_DAY_PROBE_LIMIT,
+            registry: this.activeProcesses,
+            ...(signal !== undefined && { signal }),
+          },
+        );
+
+        for (const v of fallbackFullMetadataVideos) {
+          if (
+            v.releaseTimestamp != null &&
+            Number.isFinite(v.releaseTimestamp) &&
+            v.releaseTimestamp > latestAnalyzedTimestamp
+          ) {
+            newVideoIds.add(v.id);
+          }
+        }
+      } catch (err) {
+        console.error(
+          `[scraper] same-day full-metadata probe failed for channel ${channel.id}:`,
+          err,
+        );
+      }
     }
 
     if (process.env.DEBUG_SCRAPER) {
@@ -454,13 +570,21 @@ export class YouTubeChannelScraper {
         );
       }
 
-      if (!isCatchup) {
+      if (fallbackFullMetadataVideos) {
+        videosWithAccurateTimestamps = fallbackFullMetadataVideos.filter((v) =>
+          newVideoIds.has(v.id),
+        );
+      } else if (!isCatchup) {
         // Normal path: first scrape or small number of new videos — fetch all at once
         try {
+          // IMPORTANT: Do NOT apply dateAfter filtering here.
+          // Some videos (live/premiere) may have missing/odd timestamps, and dateAfter
+          // would filter them out even though their IDs are new (PASS 1 already decided).
+          // Instead, fetch a small window and filter by ID.
+          const PASS2_WINDOW = Math.max(newVideoIds.size + 5, 60);
           const fullMetadataVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
             fullMetadata: true,
-            maxVideos: newVideoIds.size + 5,
-            ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+            maxVideos: PASS2_WINDOW,
             registry: this.activeProcesses,
           });
           videosWithAccurateTimestamps = fullMetadataVideos.filter((v) => newVideoIds.has(v.id));
@@ -478,10 +602,10 @@ export class YouTubeChannelScraper {
             console.log(`[scraper] PASS 2 catch-up batch ${Math.floor(i / CATCHUP_BATCH_SIZE) + 1}/${Math.ceil(newVideoIdArray.length / CATCHUP_BATCH_SIZE)}`);
           }
           try {
+            const PASS2_WINDOW = Math.max(batchIds.size + 5, 60);
             const batchVideos = await listChannelVideos(this.ytDlpPath, channelUrl, {
               fullMetadata: true,
-              maxVideos: batchIds.size + 5,
-              ...(latestAnalyzedTimestamp !== null && { dateAfter: latestAnalyzedTimestamp }),
+              maxVideos: PASS2_WINDOW,
               registry: this.activeProcesses,
             });
             videosWithAccurateTimestamps.push(...batchVideos.filter((v) => batchIds.has(v.id)));
