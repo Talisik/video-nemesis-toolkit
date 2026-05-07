@@ -12,7 +12,7 @@ import { IntelligentScheduleService } from "./intelligentScheduleService.js";
 
 const DEFAULT_YT_DLP = "yt-dlp";
 const YOUTUBE_VIDEO_PREFIX = "https://www.youtube.com/watch?v=";
-const DEFAULT_CHANNEL_CHECK_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+const DEFAULT_CHANNEL_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_SCHEDULE_WINDOW_MINUTES = 15;
 
 export type ScraperStatusPhase = "sleeping" | "running" | "finished" | "idle";
@@ -253,6 +253,15 @@ export class YouTubeChannelScraper {
 
     try {
       const channels = await this.getChannelsToScrape(db, channelId);
+      if (channelId !== undefined && channels.length === 0) {
+        return {
+          scrapedCount: 0,
+          errors: [],
+          message: `Cooldown: this channel was scraped within the last ${Math.round(
+            this.channelCheckIntervalMs / 60000,
+          )} minutes`,
+        };
+      }
 
       if (process.env.DEBUG_SCRAPER !== undefined) {
         console.log("[scraper] runOnce: channels to scrape =", channels.length, channelId !== undefined ? `(channelId=${channelId})` : "(schedule mode)");
@@ -310,8 +319,18 @@ export class YouTubeChannelScraper {
         console.log("[scraper] getChannelsToScrape(channelId):", c ? `found id=${c.id} active=${c.active} last_scraped=${c.last_scraped_at ?? "never"}` : "channel not found");
       }
       if (!c || !c.active || this.pausedScheduleIds.has(c.schedule_id)) return Promise.resolve([]);
-      // Manual/on-demand scrape (channelId provided) should always run now.
-      // The "recently scraped" cooldown only applies to schedule-driven runs.
+      // Manual/on-demand scrapes should still respect the per-channel cooldown
+      // to prevent repeated clicks from spawning unnecessary yt-dlp scans.
+      if (this.wasScrapedRecently(c)) {
+        if (process.env.DEBUG_SCRAPER) {
+          console.log(
+            "[scraper] channel skipped: scraped recently (within",
+            this.channelCheckIntervalMs,
+            "ms)",
+          );
+        }
+        return Promise.resolve([]);
+      }
       return Promise.resolve([c]);
     }
 
