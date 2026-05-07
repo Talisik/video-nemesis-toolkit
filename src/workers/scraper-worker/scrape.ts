@@ -404,7 +404,7 @@ export interface ScrapedVideo {
   releaseTimestamp: number | null;
 }
 
-const DEFAULT_YT_DLP_TIMEOUT_MS = 120_000; // 2 min for flat-playlist
+const DEFAULT_YT_DLP_TIMEOUT_MS = 300_000; // 5 min for flat-playlist (capped at 200 videos max, so 30-60s typical)
 const FULL_METADATA_TIMEOUT_MS = 300_000; // 5 min when fetching each video's metadata
 
 /**
@@ -430,6 +430,11 @@ export function listChannelVideos(
   }
   if (maxVideos !== undefined && maxVideos > 0) {
     args.push("--playlist-end", String(maxVideos));
+  } else if (!fullMetadata) {
+    // Limit flat-playlist scans to last 200 videos to prevent timeout on large channels.
+    // yt-dlp's --break-on-reject doesn't reliably stop early, so we always cap the scan.
+    // This ensures we catch all recent uploads while staying well under the 120s timeout.
+    args.push("--playlist-end", "200");
   }
   // Stop fetching once yt-dlp reaches a video older than the cutoff date.
   // --dateafter rejects older entries; --break-on-reject halts iteration
