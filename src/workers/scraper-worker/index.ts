@@ -408,8 +408,17 @@ export class YouTubeChannelScraper {
       ? channel.url
       : `${channel.url.replace(/\/$/, "")}/videos`;
 
-    const latestAnalyzedTimestamp = channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id);
-    const firstScrape = latestAnalyzedTimestamp === null;
+    // Important: analysis videos can exist before the channel's first real scrape
+    // (e.g. subscribe flow saved analysis seeds, but initial scrape was queued/skipped).
+    // Only use analysis timestamp cutoff after at least one completed scrape.
+    const hasPersistedDownloadRows =
+      scraperDb.hasAnyPersistedChannelDownloadRows(db, channel.id);
+    const hasCompletedScrapeBefore =
+      Boolean(channel.last_scraped_at) && hasPersistedDownloadRows;
+    const latestAnalyzedTimestamp = hasCompletedScrapeBefore
+      ? channelAnalysisVideosData.getLatestTimestampForChannel(db, channel.id)
+      : null;
+    const firstScrape = !hasCompletedScrapeBefore;
 
     const cutoffStr = latestAnalyzedTimestamp !== null
       ? new Date(latestAnalyzedTimestamp * 1000).toISOString()
@@ -724,6 +733,8 @@ export class YouTubeChannelScraper {
         ")"
       );
     }
+
+    console.log(`[scraper] Nemesis finished scraping "${channel.name}" - found ${newTasks} new videos`);
 
     return newTasks;
   }

@@ -115,9 +115,25 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     },
     [IpcChannels.CHANNELS_DELETE]: async (_event, ...args) => {
       const id = args[0] as number;
-      channelsData.deleteChannel(db, id);
+      const videoUrlsFromTasks = db
+        .prepare(`SELECT DISTINCT video_url FROM download_task WHERE channel_id = ?`)
+        .all(id) as { video_url: string }[];
+      const videoUrlsFromHistory = db
+        .prepare(`SELECT DISTINCT video_url FROM download_history WHERE channel_id = ?`)
+        .all(id) as { video_url: string }[];
+      const allVideoUrls = [
+        ...new Set([
+          ...videoUrlsFromTasks.map((r) => r.video_url),
+          ...videoUrlsFromHistory.map((r) => r.video_url),
+        ]),
+      ];
+
       db.prepare(`DELETE FROM download_history WHERE channel_id = ?`).run(id);
-      db.prepare(`DELETE FROM download_task WHERE channel_id = ? AND status = 'pending'`).run(id);
+      db.prepare(`DELETE FROM download_task WHERE channel_id = ?`).run(id);
+      for (const videoUrl of allVideoUrls) {
+        db.prepare(`DELETE FROM video_details WHERE video_url = ?`).run(videoUrl);
+      }
+      channelsData.deleteChannel(db, id);
       return undefined;
     },
     [IpcChannels.CHANNELS_SET_ACTIVE]: async (_event, ...args) => {

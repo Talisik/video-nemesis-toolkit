@@ -125,3 +125,21 @@ export function addDownloadTaskIfNotExists(
   });
   return true;
 }
+
+/**
+ * Returns true when this channel already has at least one persisted task/history row.
+ * Used to distinguish a truly first scrape from channels that only have seeded analysis data.
+ */
+export function hasAnyPersistedChannelDownloadRows(
+  db: Database.Database,
+  channelId: number,
+): boolean {
+  const taskRow = db
+    .prepare(`SELECT 1 FROM download_task WHERE channel_id = ? LIMIT 1`)
+    .get(channelId);
+  if (taskRow) return true;
+  const historyRow = db
+    .prepare(`SELECT 1 FROM download_history WHERE channel_id = ? LIMIT 1`)
+    .get(channelId);
+  return historyRow != null;
+}
