@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { listSlotsByChannelId, getNextOccurrence } from "../../data/channelSlots.js";
 import { YouTubeSmartScheduler, type ScrapePlan } from "./intelligentScheduler.js";
 
 export interface IntelligentScheduleRow {
@@ -18,6 +19,22 @@ export interface IntelligentScheduleRow {
  */
 export class IntelligentScheduleService {
   private scheduler = new YouTubeSmartScheduler();
+
+  /**
+   * Returns the earliest next slot occurrence for a channel, or null if no slots defined.
+   * Used to clamp intelligent next_scrape_time so it never fires before the user's schedule.
+   */
+  private getNextSlotTime(db: Database.Database, channelId: number): Date | null {
+    const slots = listSlotsByChannelId(db, channelId);
+    if (slots.length === 0) return null;
+    const now = new Date();
+    let earliest: Date | null = null;
+    for (const slot of slots) {
+      const next = getNextOccurrence(now, slot.day_of_week, slot.time_minutes);
+      if (earliest === null || next.getTime() < earliest.getTime()) earliest = next;
+    }
+    return earliest;
+  }
 
   /**
    * Analyze raw timestamps and return a prediction plan.
@@ -70,11 +87,19 @@ export class IntelligentScheduleService {
           updated_at = excluded.updated_at
       `);
 
-      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] inserting into intelligent_schedule: channel=${channelId} nextScrapeTime=${plan.nextScrapeTime.toISOString()} pattern=${plan.pattern} confidence=${plan.confidence} expectedVideos=${plan.expectedVideos} isErratic=${plan.isErratic} analysisBasisCount=${timestamps.length}`);
+      // Clamp next scrape time to not fire before the channel's next slot schedule.
+      // This prevents the intelligent scheduler from triggering scrapes outside of
+      // the user-defined schedule (e.g. firing same-day due to short upload history gaps).
+      const nextSlot = this.getNextSlotTime(db, channelId);
+      const clampedNextScrapeTime = nextSlot && nextSlot.getTime() > plan.nextScrapeTime.getTime()
+        ? nextSlot
+        : plan.nextScrapeTime;
+
+      if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] inserting into intelligent_schedule: channel=${channelId} nextScrapeTime=${clampedNextScrapeTime.toISOString()} pattern=${plan.pattern} confidence=${plan.confidence} expectedVideos=${plan.expectedVideos} isErratic=${plan.isErratic} analysisBasisCount=${timestamps.length}`);
 
       updateStmt.run(
         channelId,
-        plan.nextScrapeTime.toISOString(),
+        clampedNextScrapeTime.toISOString(),
         plan.pattern,
         plan.confidence,
         plan.expectedVideos,
@@ -204,6 +229,12 @@ export class IntelligentScheduleService {
             // Rest: stagger over next 2 hours
             const offset = 15 + (index - 5) * 5;
             nextScrape = new Date(now.getTime() + Math.min(120, offset) * 60 * 1000);
+          }
+
+          // Clamp to next slot schedule — don't reschedule earlier than the user's defined time.
+          const nextSlot = this.getNextSlotTime(db, ch.id);
+          if (nextSlot && nextSlot.getTime() > nextScrape.getTime()) {
+            nextScrape = nextSlot;
           }
 
           updateStmt.run(nextScrape.toISOString(), ch.id);
