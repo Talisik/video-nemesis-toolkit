@@ -32,12 +32,33 @@ export class YouTubeSmartScheduler {
    */
   public analyze(unixTimestamps: number[]): ScrapePlan {
     // 1. Normalize and Limit to MAX_HISTORY latest
-    const timestamps = unixTimestamps
+    let timestamps = unixTimestamps
       .slice(0, this.MAX_HISTORY)
       .map(t => t < 10000000000 ? t * 1000 : t)
       .sort((a, b) => a - b);
 
     if (timestamps.length < 3) return this.fallback();
+
+    // Detect date-only timestamps: YouTube sometimes returns midnight-UTC values when
+    // accurate upload times aren't available. If the majority of timestamps are at
+    // exactly 00:00:00 UTC, deduplicate to one entry per unique date. Without this,
+    // multiple videos sharing the same midnight timestamp appear as a dense burst
+    // and falsely trigger the high-frequency branch (2h polling interval).
+    const isMidnightUTC = (ms: number) => {
+      const d = new Date(ms);
+      return d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0;
+    };
+    const midnightCount = timestamps.filter(isMidnightUTC).length;
+    if (midnightCount / timestamps.length >= 0.6) {
+      const seen = new Set<string>();
+      timestamps = timestamps.filter(ms => {
+        const key = new Date(ms).toISOString().slice(0, 10);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (timestamps.length < 3) return this.fallback();
+    }
 
     const dates = timestamps.map(t => new Date(t));
     const lastVideo = dates[dates.length - 1]!;

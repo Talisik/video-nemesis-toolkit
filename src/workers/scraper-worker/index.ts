@@ -712,7 +712,9 @@ export class YouTubeChannelScraper {
     // is pushed forward even when no new videos were found. Without this, a
     // zero-result scrape leaves next_scrape_time in the past and the channel
     // gets re-scraped immediately on every loop iteration.
-    this.intelligentScheduler.updateChannelSchedule(db, channel.id);
+    const scheduleUpdated = this.intelligentScheduler.updateChannelSchedule(db, channel.id);
+    const updatedSchedule = this.intelligentScheduler.getChannelSchedule(db, channel.id);
+    console.log(`[scraper] schedule update for "${channel.name}": updated=${scheduleUpdated} next_scrape_time=${updatedSchedule?.next_scrape_time ?? "null"} pattern=${updatedSchedule?.pattern ?? "null"}`);
 
     if (process.env.DEBUG_SCRAPER) {
       console.log(
