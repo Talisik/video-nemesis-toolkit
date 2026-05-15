@@ -142,11 +142,15 @@ export class YouTubeSmartScheduler {
 
     let nextScrape = addHours(predictedTime, 2);
 
-    // Adaptive Backoff: if prediction is in the past, use fallback with increasing intervals
+    // Adaptive Backoff: if prediction is in the past, reschedule based on the channel's
+    // own cadence so slow uploaders (e.g. once a week) don't get a 4-hour retry.
     const now = new Date();
     if (isAfter(now, nextScrape)) {
       const hoursSinceLast = differenceInHours(now, lastVideo!);
-      const backoff = Math.min(48, Math.max(4, hoursSinceLast / 12));
+      // Minimum backoff is a fraction of the channel's weighted gap, not a fixed 4 hours.
+      // A channel that uploads every 213h won't be retried in 4h — it gets ~71h minimum.
+      const cadenceMin = weightedGap / 3;
+      const backoff = Math.min(48, Math.max(cadenceMin, hoursSinceLast / 12));
       nextScrape = addHours(now, backoff);
     }
 
