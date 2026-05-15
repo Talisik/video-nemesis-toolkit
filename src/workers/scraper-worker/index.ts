@@ -706,10 +706,13 @@ export class YouTubeChannelScraper {
     if (analysisInputs.length > 0) {
       channelAnalysisVideosData.upsert(db, channel.id, analysisInputs);
       channelAnalysisVideosData.capPerChannel(db, channel.id);
-
-      // Update intelligent schedule with improved data
-      this.intelligentScheduler.updateChannelSchedule(db, channel.id);
     }
+
+    // Always update the intelligent schedule after a scrape so next_scrape_time
+    // is pushed forward even when no new videos were found. Without this, a
+    // zero-result scrape leaves next_scrape_time in the past and the channel
+    // gets re-scraped immediately on every loop iteration.
+    this.intelligentScheduler.updateChannelSchedule(db, channel.id);
 
     if (process.env.DEBUG_SCRAPER) {
       console.log(
