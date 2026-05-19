@@ -69,6 +69,8 @@ export const IpcChannels = {
   DOWNLOAD_QUEUE_PUSHED: "toolkit:downloadQueue:pushed",
   /** Main → renderer: scraper status (payload: { phase: 'sleeping'|'running'|'finished'|'idle', nextRunAt?: string }). */
   SCRAPER_STATUS: "toolkit:scraper:status",
+  /** Main → renderer: fired after each channel scrape (payload: { channelId: number, lastScrapedAt: string }). */
+  SCRAPER_CHANNEL_SCRAPED: "toolkit:scraper:channelScraped",
 
   /** Fetch channel details (name, avatar, subscribers, video count, site) from a channel URL via yt-dlp. */
   CHANNEL_FETCH_DETAILS: "toolkit:channel:fetchDetails",

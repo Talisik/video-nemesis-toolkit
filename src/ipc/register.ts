@@ -60,6 +60,11 @@ export function registerIpcHandlers(
       },
     }),
     ...(options.sendToRenderer != null && {
+      onChannelScraped: (channelId: number, lastScrapedAt: string) => {
+        options.sendToRenderer!(IpcChannels.SCRAPER_CHANNEL_SCRAPED, { channelId, lastScrapedAt });
+      },
+    }),
+    ...(options.sendToRenderer != null && {
       onStatusChange: (event) => {
         options.sendToRenderer!(statusChannel, event);
       },

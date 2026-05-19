@@ -57,6 +57,8 @@ export interface YouTubeChannelScraperOptions {
    * run was schedule-driven/global.
    */
   onRunComplete?: (channelId?: number) => void;
+  /** Called after each individual channel scrape completes successfully. */
+  onChannelScraped?: (channelId: number, lastScrapedAt: string) => void;
   /** Called when scraper phase changes: running, finished, sleeping (with nextRunAt), idle. */
   onStatusChange?: (event: ScraperStatusEvent) => void;
   /**
@@ -86,6 +88,7 @@ export class YouTubeChannelScraper {
   private stopped = false;
   private pausedScheduleIds = new Set<number>();
   private onRunComplete: ((channelId?: number) => void) | undefined;
+  private onChannelScraped: ((channelId: number, lastScrapedAt: string) => void) | undefined;
   private onStatusChange: ((event: ScraperStatusEvent) => void) | undefined;
   private newestOnlyMode: boolean;
   private newestFirstRunCount: number;
@@ -104,6 +107,7 @@ export class YouTubeChannelScraper {
     this.scheduleWindowMinutes =
       options.scheduleWindowMinutes ?? DEFAULT_SCHEDULE_WINDOW_MINUTES;
     this.onRunComplete = options.onRunComplete;
+    this.onChannelScraped = options.onChannelScraped;
     this.onStatusChange = options.onStatusChange;
     this.newestOnlyMode = options.newestOnlyMode ?? false;
     this.newestFirstRunCount = options.newestFirstRunCount ?? 15;
@@ -274,7 +278,9 @@ export class YouTubeChannelScraper {
         if (typeof result === "number") {
           scrapedCount++;
           totalNewVideos += result;
-          scraperDb.updateChannelLastScraped(db, channel.id, new Date().toISOString());
+          const lastScrapedAt = new Date().toISOString();
+          scraperDb.updateChannelLastScraped(db, channel.id, lastScrapedAt);
+          this.onChannelScraped?.(channel.id, lastScrapedAt);
         } else {
           errors.push(result);
         }
