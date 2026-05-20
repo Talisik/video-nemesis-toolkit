@@ -70,7 +70,6 @@
     "@electron/rebuild": "^4.0.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.0.0",
-    "electron": "^40.6.1",
     "typescript": "^5.9.3"
   }
 }
