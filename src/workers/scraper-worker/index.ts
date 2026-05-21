@@ -669,7 +669,12 @@ export class YouTubeChannelScraper {
     let newTasks = 0;
     const analysisInputs: Parameters<typeof channelAnalysisVideosData.upsert>[2] = [];
 
-    for (const v of videosWithAccurateTimestamps) {
+    // yt-dlp returns videos newest-first. Reverse so we insert oldest-first,
+    // giving oldest-new-video the earliest created_at. The IPC layer sends tasks
+    // ORDER BY created_at ASC, so the bridge processes and date-stamps them
+    // oldest→newest — making the newest video end up with the highest DateAdded
+    // and therefore appear first in the UI's dateAdded DESC sort.
+    for (const v of [...videosWithAccurateTimestamps].reverse()) {
       if (this.stopped) break;
 
       const durationMinutes = v.durationSeconds / 60;
@@ -685,7 +690,7 @@ export class YouTubeChannelScraper {
         channel_id: channel.id,
       });
 
-      if (!added) break; // Reached a video already scraped; all older videos are known
+      if (!added) continue; // Already exists (race/duplicate); keep processing newer ones
 
       scraperDb.upsertVideoDetail(db, {
         video_url: videoUrl,
