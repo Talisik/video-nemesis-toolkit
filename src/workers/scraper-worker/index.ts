@@ -225,6 +225,13 @@ export class YouTubeChannelScraper {
           clearTimeout(this.scheduleTimeoutId);
           this.scheduleTimeoutId = null;
         }
+        if (this.stopped) return;
+        const retryMs = 2 * 60 * 1000;
+        this.onStatusChange?.({ phase: "sleeping", nextRunAt: new Date(Date.now() + retryMs).toISOString() });
+        this.scheduleTimeoutId = setTimeout(() => {
+          this.scheduleTimeoutId = null;
+          this.runScheduleLoop();
+        }, retryMs);
       });
   };
 
