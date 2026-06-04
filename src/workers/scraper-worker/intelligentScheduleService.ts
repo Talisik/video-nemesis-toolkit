@@ -268,7 +268,6 @@ export class IntelligentScheduleService {
    */
   public refreshAllSchedules(db: Database.Database): number {
     try {
-      // Get all channels with analysis videos
       const stmt = db.prepare(`
         SELECT DISTINCT channel_id FROM channel_analysis_videos
       `);
@@ -279,6 +278,30 @@ export class IntelligentScheduleService {
         if (this.updateChannelSchedule(db, ch.channel_id)) {
           updated++;
         }
+      }
+
+      return updated;
+    } catch (error) {
+      console.error("[intelligent-schedule] Error refreshing all schedules:", error);
+      return 0;
+    }
+  }
+
+  /**
+   * Async variant of refreshAllSchedules that yields to the event loop between
+   * channels, preventing the IPC main thread from stalling when the channel list
+   * is large. Prefer this version inside IPC handlers.
+   */
+  public async refreshAllSchedulesAsync(db: Database.Database): Promise<number> {
+    try {
+      const channels = db
+        .prepare(`SELECT DISTINCT channel_id FROM channel_analysis_videos`)
+        .all() as { channel_id: number }[];
+
+      let updated = 0;
+      for (const ch of channels) {
+        if (this.updateChannelSchedule(db, ch.channel_id)) updated++;
+        await new Promise<void>((r) => setImmediate(r));
       }
 
       return updated;

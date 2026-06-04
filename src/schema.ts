@@ -98,6 +98,11 @@ export function runMigrations(db: Database.Database): void {
   db.exec(`DELETE FROM intelligent_schedule WHERE channel_id NOT IN (SELECT id FROM channels)`);
   db.exec(`DELETE FROM download_task WHERE status = 'pending' AND channel_id NOT IN (SELECT id FROM channels)`);
   db.exec(`DELETE FROM download_history WHERE channel_id NOT IN (SELECT id FROM channels)`);
+
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cav_channel_ts
+           ON channel_analysis_videos(channel_id, release_timestamp)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_cs_channel_dow_tm
+           ON channel_slots(channel_id, day_of_week, time_minutes)`);
 }
 
 /**

@@ -37,6 +37,7 @@ export interface HandlerContext {
 
 function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ...args: unknown[]) => Promise<unknown>> {
   const { db, getDownloadWorker, getScraper, getDownloadWorkerRunning, setDownloadWorkerRunning } = ctx;
+  const scheduleService = new IntelligentScheduleService();
 
   return {
     [IpcChannels.CHANNELS_LIST]: async (_event, ...args) => {
@@ -276,8 +277,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         
         if (timestamps.length >= 3) {
           // Get intelligent prediction
-          const intelligentScheduler = new IntelligentScheduleService();
-          const plan = intelligentScheduler.analyzeTimestamps(timestamps);
+          const plan = scheduleService.analyzeTimestamps(timestamps);
           if (process.env.DEBUG_SCHEDULE) {
             try {
               console.log('[DEBUG_SCHEDULE] quickVideos parsed timestamps:');
@@ -359,8 +359,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
       })));
       if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] upserted ${videos.length} videos to channel_analysis_videos`);
       // After saving analysis videos, update intelligent schedule
-      const scheduler = new IntelligentScheduleService();
-      const success = scheduler.updateChannelSchedule(db, channelId);
+      const success = scheduleService.updateChannelSchedule(db, channelId);
       if (process.env.DEBUG_SCHEDULE) console.log(`[DEBUG_SCHEDULE] updateChannelSchedule channel=${channelId} success=${success}`);
       // Return the newly created schedule
       const schedule = intelligentSchedulesData.getChannelSchedule(db, channelId);
@@ -504,8 +503,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
     },
 
     [IpcChannels.INTELLIGENT_SCHEDULE_REFRESH_ALL]: async () => {
-      const scheduler = new IntelligentScheduleService();
-      const updated = scheduler.refreshAllSchedules(db);
+      const updated = await scheduleService.refreshAllSchedulesAsync(db);
       return { updated };
     },
 
