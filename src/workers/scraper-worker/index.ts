@@ -14,6 +14,12 @@ const DEFAULT_YT_DLP = "yt-dlp";
 const YOUTUBE_VIDEO_PREFIX = "https://www.youtube.com/watch?v=";
 const DEFAULT_CHANNEL_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const DEFAULT_SCHEDULE_WINDOW_MINUTES = 15;
+/**
+ * setTimeout stores its delay in a 32-bit signed int; anything larger is silently
+ * clamped to 1 ms, which turns a far-future schedule into a busy re-entry loop.
+ * Sleep in chunks no longer than this and re-evaluate the schedule on each wake.
+ */
+const MAX_SLEEP_CHUNK_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 export type ScraperStatusPhase = "sleeping" | "running" | "finished" | "idle";
 
@@ -182,42 +188,7 @@ export class YouTubeChannelScraper {
     this.runOnce()
       .then(() => {
         if (this.stopped) return;
-        const db = openDb(this.dbPath);
-        
-        // Get next wake time from intelligent schedule
-        const intelligentMs = this.intelligentScheduler.getNextScheduledScrapeMs(db);
-        
-        // Get next wake time from traditional slot/interval schedule (fallback)
-        const slotMs = scraperDb.getNextSlotStartMs(db, new Date());
-        
-        // Use whichever comes first, or null if neither has schedules
-        let nextMs: number | null = null;
-        if (intelligentMs !== null && slotMs !== null) {
-          nextMs = Math.min(intelligentMs, slotMs);
-        } else if (intelligentMs !== null) {
-          nextMs = intelligentMs;
-        } else if (slotMs !== null) {
-          nextMs = slotMs;
-        }
-        
-        db.close();
-        
-        if (nextMs === null) {
-          if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules (intelligent or slot-based); schedule loop idle (not stopping so on-demand runOnce still works)");
-          this.onStatusChange?.({ phase: "idle" });
-          return;
-        }
-        if (nextMs <= 0) {
-          setImmediate(() => { if (!this.stopped) this.runScheduleLoop(); });
-          return;
-        }
-        const nextRunAt = new Date(Date.now() + nextMs).toISOString();
-        this.onStatusChange?.({ phase: "sleeping", nextRunAt });
-        if (process.env.DEBUG_SCRAPER) console.log("[scraper] sleeping", Math.round(nextMs / 1000), "s until next schedule");
-        this.scheduleTimeoutId = setTimeout(() => {
-          this.scheduleTimeoutId = null;
-          this.runScheduleLoop();
-        }, nextMs);
+        this.sleepUntilNextSchedule();
       })
       .catch((err) => {
         console.error("[scraper] runScheduleLoop error:", err);
@@ -233,6 +204,58 @@ export class YouTubeChannelScraper {
           this.runScheduleLoop();
         }, retryMs);
       });
+  };
+
+  /**
+   * Compute the next wake time and arm the schedule timer, without scraping.
+   * Sleeps longer than MAX_SLEEP_CHUNK_MS are split into chunks so the delay
+   * always fits setTimeout's 32-bit budget; each chunk just re-evaluates here.
+   */
+  private sleepUntilNextSchedule = (): void => {
+    if (this.stopped) return;
+    const db = openDb(this.dbPath);
+
+    // Get next wake time from intelligent schedule
+    const intelligentMs = this.intelligentScheduler.getNextScheduledScrapeMs(db);
+
+    // Get next wake time from traditional slot/interval schedule (fallback)
+    const slotMs = scraperDb.getNextSlotStartMs(db, new Date());
+
+    // Use whichever comes first, or null if neither has schedules
+    let nextMs: number | null = null;
+    if (intelligentMs !== null && slotMs !== null) {
+      nextMs = Math.min(intelligentMs, slotMs);
+    } else if (intelligentMs !== null) {
+      nextMs = intelligentMs;
+    } else if (slotMs !== null) {
+      nextMs = slotMs;
+    }
+
+    db.close();
+
+    if (nextMs === null) {
+      if (process.env.DEBUG_SCRAPER) console.log("[scraper] no schedules (intelligent or slot-based); schedule loop idle (not stopping so on-demand runOnce still works)");
+      this.onStatusChange?.({ phase: "idle" });
+      return;
+    }
+    if (nextMs <= 0) {
+      setImmediate(() => { if (!this.stopped) this.runScheduleLoop(); });
+      return;
+    }
+    const nextRunAt = new Date(Date.now() + nextMs).toISOString();
+    this.onStatusChange?.({ phase: "sleeping", nextRunAt });
+    if (process.env.DEBUG_SCRAPER) console.log("[scraper] sleeping", Math.round(nextMs / 1000), "s until next schedule");
+    const sleepMs = Math.min(nextMs, MAX_SLEEP_CHUNK_MS);
+    const isChunk = sleepMs < nextMs;
+    this.scheduleTimeoutId = setTimeout(() => {
+      this.scheduleTimeoutId = null;
+      if (isChunk) {
+        // Woke early only to keep the timer within range - do not scrape yet.
+        this.sleepUntilNextSchedule();
+        return;
+      }
+      this.runScheduleLoop();
+    }, sleepMs);
   };
 
   /**
