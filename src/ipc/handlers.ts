@@ -15,6 +15,7 @@ import { DownloadTaskStatus } from "../types/enum/downloadTaskStatus.js";
 import type { IpcBridgeOptions } from "./types.js";
 import type { ScheduleRow } from "../types/index.js";
 import { IntelligentScheduleService } from "../workers/scraper-worker/intelligentScheduleService.js";
+import { inferSlotsFromTimestamps } from "../workers/scraper-worker/scheduleInference.js";
 import type { ScrapeRunResult } from "../workers/scraper-worker/index.js";
 
 function jsonArr(v: string[] | string): string {
@@ -262,7 +263,11 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         if (timestamps.length > 0 && dateOnlyCount / timestamps.length >= 0.6) {
           if (process.env.DEBUG_SCHEDULE) console.log('[DEBUG_SCHEDULE] Detected date-only timestamps; fetching accurate timestamps (fullMetadata)');
           try {
-            const accurate = await listChannelVideos(ytDlpPath, channelVideosUrl, { fullMetadata: true, maxVideos: 10 });
+            // Match the initial fetch size: 10 samples is far too few to infer a
+            // weekly pattern, and for a high-frequency channel 10 uploads can fit
+            // inside a single day, collapsing the inferred days to whichever one
+            // or two the sample window happened to straddle.
+            const accurate = await listChannelVideos(ytDlpPath, channelVideosUrl, { fullMetadata: true, maxVideos: 50 });
             timestamps = accurate
               .filter(v => v.releaseTimestamp != null && Number.isFinite(v.releaseTimestamp))
               .map(v => v.releaseTimestamp as number);
@@ -274,6 +279,7 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
         
         let intelligentPrediction = null;
         let suggestedSlots: { day_of_week: number; time_minutes: number }[] = [];
+        let suggestedIntervalMinutes: number | undefined;
         
         if (timestamps.length >= 3) {
           // Get intelligent prediction
@@ -302,33 +308,20 @@ function createHandlers(ctx: HandlerContext): Record<string, (event: unknown, ..
             isErratic: plan.isErratic,
           };
           
-          // Extract suggested slots for manual mode
-          const dayTimeMap = new Map<number, number[]>();
-          
-          timestamps.forEach(ts => {
-            const date = new Date(ts * 1000);
-            const dayOfWeek = date.getUTCDay();
-            const timeMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
-            
-            if (!dayTimeMap.has(dayOfWeek)) {
-              dayTimeMap.set(dayOfWeek, []);
-            }
-            dayTimeMap.get(dayOfWeek)!.push(timeMinutes);
-          });
-          
-          // For each day with uploads, calculate median time
-          dayTimeMap.forEach((times, dayOfWeek) => {
-            const sorted = times.sort((a, b) => a - b);
-            const median = sorted[Math.floor(sorted.length / 2)]!;
-            suggestedSlots.push({ day_of_week: dayOfWeek, time_minutes: Math.round(median) });
-          });
-          
-          suggestedSlots.sort((a, b) => a.day_of_week - b.day_of_week);
+          // Extract suggested slots for manual mode. Shared with the scraper
+          // worker so Auto and Manual can't disagree: for a high-frequency
+          // channel this fans the peak hours across all 7 days instead of
+          // bucketing by day-of-week, which for sub-3-day samples reflects
+          // only which midnight the window straddled.
+          const inferred = inferSlotsFromTimestamps(timestamps);
+          suggestedSlots = inferred.suggestedSlots;
+          suggestedIntervalMinutes = inferred.suggestedIntervalMinutes;
         }
         
         return {
           intelligentPrediction,
           suggestedSlots,
+          ...(suggestedIntervalMinutes != null && { suggestedIntervalMinutes }),
           videos: quickVideos,
           videoCount: quickVideos.length,
           message: timestamps.length < 3 ? "Not enough videos to generate schedule" : "Schedule analysis complete",

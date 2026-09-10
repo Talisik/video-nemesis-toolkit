@@ -37,6 +37,9 @@ const HIGH_FREQ_HOUR_THRESHOLD_RATIO = 0.02;
 /** If last N videos span fewer than this many days, use time-of-day-only inference (every day at peak hours). */
 const MIN_SPAN_DAYS = 3;
 
+/** Uploads per day at or above which day-of-week carries no signal, regardless of span. */
+const HIGH_FREQ_UPLOADS_PER_DAY = 3;
+
 /** Minimum number of videos with valid release timestamps to infer anything. */
 const MIN_VIDEOS_FOR_INFERENCE = 5;
 
@@ -229,6 +232,88 @@ export function computeIntervalMinutesFromTimestamps(timestamps: number[]): numb
   if (intervalDays != null && INTERVAL_DAYS_TO_MINUTES[intervalDays] != null)
     return INTERVAL_DAYS_TO_MINUTES[intervalDays];
   return 1440;
+}
+
+/**
+ * Infer suggested slots directly from upload timestamps (Unix seconds).
+ *
+ * Shared by the worker's channel-URL inference and the CHANNEL_ANALYZE_SCHEDULE
+ * IPC handler so both derive slots the same way. The key case this handles that
+ * naive day-bucketing does not: a channel uploading many times a day produces
+ * timestamps spanning < MIN_SPAN_DAYS, where the day-of-week of each sample is
+ * meaningless — it only reflects which midnight the sample window straddled.
+ * There we cluster by time-of-day and suggest that time on every day.
+ */
+export function inferSlotsFromTimestamps(timestamps: number[]): {
+  suggestedSlots: SuggestedSlot[];
+  suggestedIntervalMinutes?: number;
+  highFrequency: boolean;
+} {
+  if (timestamps.length < 3) return { suggestedSlots: [], highFrequency: false };
+
+  const sorted = [...timestamps].sort((a, b) => a - b);
+  const spanDays = (sorted[sorted.length - 1]! - sorted[0]!) / SECONDS_PER_DAY;
+
+  // Decide high-frequency by upload *rate*, not just span. A short span alone
+  // misses a channel whose 50-video sample happens to reach past MIN_SPAN_DAYS
+  // while still uploading many times a day — exactly the case where day-of-week
+  // carries no signal.
+  const uploadsPerDay = spanDays > 0 ? timestamps.length / spanDays : Infinity;
+  const highFrequency = spanDays < MIN_SPAN_DAYS || uploadsPerDay >= HIGH_FREQ_UPLOADS_PER_DAY;
+
+  // High-frequency: cluster by hour only, then fan out across all 7 days.
+  if (highFrequency) {
+    const hourCount = new Map<number, number>();
+    for (const ts of timestamps) {
+      const bucket = bucketTime(timestampToLocalSlot(ts).time_minutes);
+      hourCount.set(bucket, (hourCount.get(bucket) ?? 0) + 1);
+    }
+    // No hard floor of 2 here: a channel uploading every ~2 hrs hits each hour
+    // bucket exactly once, so requiring 2 would discard every bucket and yield
+    // no slots at all. Rank by frequency and take the top hours instead.
+    const threshold = Math.max(1, Math.ceil(timestamps.length * HIGH_FREQ_HOUR_THRESHOLD_RATIO));
+    const peakHours = Array.from(hourCount.entries())
+      .map(([time_minutes, count]) => ({ time_minutes, count }))
+      .sort((a, b) => b.count - a.count || a.time_minutes - b.time_minutes)
+      .filter((e) => e.count >= threshold)
+      .slice(0, MAX_PEAK_HOURS_HIGH_FREQ)
+      .map((e) => e.time_minutes);
+
+    const suggestedSlots: SuggestedSlot[] = [];
+    for (let day = 0; day < 7 && suggestedSlots.length < MAX_SLOTS_HIGH_FREQ; day++) {
+      for (const time_minutes of peakHours) {
+        if (suggestedSlots.length >= MAX_SLOTS_HIGH_FREQ) break;
+        suggestedSlots.push({
+          day_of_week: day,
+          time_minutes,
+          share: (hourCount.get(time_minutes) ?? 0) / timestamps.length,
+        });
+      }
+    }
+    return { suggestedSlots, suggestedIntervalMinutes: 120, highFrequency: true };
+  }
+
+  // Normal case: median upload time per day-of-week that actually saw uploads.
+  const dayTimeMap = new Map<number, number[]>();
+  for (const ts of timestamps) {
+    const slot = timestampToLocalSlot(ts);
+    const times = dayTimeMap.get(slot.day_of_week);
+    if (times) times.push(slot.time_minutes);
+    else dayTimeMap.set(slot.day_of_week, [slot.time_minutes]);
+  }
+
+  const suggestedSlots: SuggestedSlot[] = [];
+  dayTimeMap.forEach((times, day_of_week) => {
+    const s = [...times].sort((a, b) => a - b);
+    suggestedSlots.push({
+      day_of_week,
+      time_minutes: Math.round(s[Math.floor(s.length / 2)]!),
+      share: times.length / timestamps.length,
+    });
+  });
+  suggestedSlots.sort((a, b) => a.day_of_week - b.day_of_week);
+
+  return { suggestedSlots, highFrequency: false };
 }
 
 /**
