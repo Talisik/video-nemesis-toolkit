@@ -1,6 +1,6 @@
 {
   "name": "video-nemesis-toolkit",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "A toolkit for video processing and manipulation",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

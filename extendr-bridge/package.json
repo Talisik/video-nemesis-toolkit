@@ -1,6 +1,6 @@
 {
   "name": "nemesis-extension",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Extendr bridge for Video Nemesis Toolkit (main-process extension)",
   "main": "index.js",
   "private": true
